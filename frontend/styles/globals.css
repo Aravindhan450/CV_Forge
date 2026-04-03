@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 42 45% 98%;
+  --foreground: 210 24% 13%;
+  --card: 0 0% 100%;
+  --card-foreground: 210 24% 13%;
+  --primary: 198 79% 35%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 180 22% 92%;
+  --secondary-foreground: 210 24% 13%;
+  --muted: 200 20% 94%;
+  --muted-foreground: 212 14% 38%;
+  --border: 202 20% 84%;
+  --success: 145 63% 36%;
+  --warning: 42 95% 48%;
+  --danger: 2 78% 52%;
+}
+
+html,
+body,
+#__next {
+  min-height: 100%;
+}
+
+body {
+  color: hsl(var(--foreground));
+  background: radial-gradient(circle at top right, rgba(0, 153, 191, 0.08), transparent 40%),
+    radial-gradient(circle at bottom left, rgba(255, 153, 0, 0.1), transparent 35%),
+    hsl(var(--background));
+}
+
+.glass-card {
+  @apply border border-border/70 bg-card/85 backdrop-blur;
+}
+
+.score-pulse {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.04);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
