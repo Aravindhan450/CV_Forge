@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -69,6 +70,27 @@ class AnalysisRequest(BaseModel):
     resume_text: str = Field(min_length=50)
     job_description: str = Field(min_length=30)
     previous_analysis_id: str | None = None
+
+
+class AnalysisTaskQueuedResponse(BaseModel):
+    task_id: str
+    status: Literal["processing"] = "processing"
+
+
+class AnalysisTaskStatusResponse(BaseModel):
+    task_id: str
+    status: Literal["processing", "completed", "failed"]
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class ResumeHistoryItem(BaseModel):
+    analysis_id: str
+    created_at: datetime
+    resume_filename: str | None = None
+    ats_score: int
+    skill_match_score: int
+    semantic_fit_score: int
 
 
 class ScoreCard(BaseModel):

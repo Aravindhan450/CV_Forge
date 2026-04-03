@@ -13,6 +13,7 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/cv_forge",
         alias="DATABASE_URL",
     )
+    redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
 
     # CORS
     cors_origins: str = Field(default="http://localhost:3000", alias="CORS_ORIGINS")
@@ -21,6 +22,9 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5-mini", alias="OPENAI_MODEL")
+    supabase_url: str | None = Field(default=None, alias="SUPABASE_URL")
+    supabase_anon_key: str | None = Field(default=None, alias="SUPABASE_ANON_KEY")
+    supabase_jwt_secret: str | None = Field(default=None, alias="SUPABASE_JWT_SECRET")
 
     # Models
     embedding_model_name: str = Field(

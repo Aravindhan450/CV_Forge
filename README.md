@@ -1,36 +1,34 @@
 # CV Forge - AI Resume Analyzer Platform
 
-Production-grade resume analysis SaaS architecture with a FastAPI backend and Next.js frontend.
+Production-grade resume analysis platform with asynchronous processing.
 
 ## System Architecture
 
-- `frontend/`: Next.js + Tailwind + ShadCN-style components + Monaco editor
-- `backend/`: FastAPI microservice with modular analysis engines
-- `docker-compose.yml`: local PostgreSQL
+- `frontend/`: Next.js dashboard and Monaco-based resume editor
+- `backend/`: FastAPI API, analysis engines, Celery tasks
+- `redis`: Celery broker + result backend
+- `postgres`: analysis persistence
+- `flower`: Celery monitoring UI
+- `supabase auth`: user signup/login and JWT issuance
 
-### Analysis Engines
+### Analysis Pipeline
 
-- Resume Parser: PDF/DOCX/TXT ingestion with section extraction
-- ATS Engine: deterministic rule-based scoring (0-100)
-- Skill Matching Engine: embedding-based matching using `all-MiniLM-L6-v2`
-- Semantic Analyzer: LLM-driven JSON feedback (OpenAI), with heuristic fallback
-- Career Fit Engine: trajectory and gap analysis
-- Highlight Engine: inline resume annotations (green/yellow/red)
-- Report Generator: downloadable PDF analysis report
+`Client -> FastAPI -> Celery queue -> Worker -> Analysis engines -> Redis result -> Client polls status`
 
 ## Backend Structure
 
 ```text
 backend/
   app/
-    main.py
     core/
       config.py
       database.py
-      logging.py
+      celery_app.py
     routes/
       analysis.py
       health.py
+    tasks/
+      analysis_tasks.py
     services/
       analysis_orchestrator.py
       resume_parser.py
@@ -41,62 +39,72 @@ backend/
       career_fit_engine.py
       highlight_engine.py
       report_generator.py
-      vector_store.py
-    models/
-      db_models.py
-      schemas.py
-    utils/
-      text.py
-```
-
-## Frontend Structure
-
-```text
-frontend/
-  components/
-    analysis-sidebar.tsx
-    ui/
-  pages/
-    _app.tsx
-    index.tsx
-  resume-preview/
-    resume-preview.tsx
-  keyword-panel/
-    keyword-panel.tsx
-  score-dashboard/
-    score-dashboard.tsx
-  lib/
-    api.ts
-    types.ts
-    utils.ts
 ```
 
 ## Local Setup
 
-1. Start PostgreSQL:
-   - `docker compose up -d`
-2. Backend:
-   - `cd backend`
-   - `python -m venv .venv && source .venv/bin/activate`
-   - `pip install -r requirements.txt`
-   - `cp .env.example .env` and set `OPENAI_API_KEY`
-   - `uvicorn app.main:app --reload --port 8000`
-3. Frontend:
-   - `cd frontend`
-   - `npm install`
-   - `cp .env.local.example .env.local`
-   - `npm run dev`
+1. Copy environment variables:
+   - `cp .env.example .env`
+2. Start infra + backend + workers:
+   - `docker compose up --build`
+3. Start frontend (separate terminal):
+   - `cd frontend && npm install && npm run dev`
 
-## API Endpoints
+Service ports:
+- FastAPI: `http://localhost:8000`
+- Flower: `http://localhost:5555`
+- Frontend: `http://localhost:3000`
 
-- `POST /api/v1/analysis/upload`: analyze uploaded resume file + job description
-- `POST /api/v1/analysis/reanalyze`: analyze edited resume text
-- `GET /api/v1/analysis/{analysis_id}`: fetch analysis detail
-- `GET /api/v1/analysis/{analysis_id}/report`: download PDF report
-- `GET /api/v1/health`: service health status
+Required auth env vars:
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_JWT_SECRET`
 
-## Notes
+## Async Analysis API
 
-- Semantic analysis returns strict structured JSON and gracefully falls back when LLM is unavailable.
-- Score deltas are tracked across analysis versions using `previous_analysis_id`.
-- Highlight spans are returned as character offsets for frontend rendering.
+- `POST /api/v1/analysis/upload`
+  - Returns: `{ "task_id": "...", "status": "processing" }`
+- `POST /api/v1/analysis/reanalyze`
+  - Returns: `{ "task_id": "...", "status": "processing" }`
+- `GET /api/v1/analysis-status/{task_id}`
+  - Processing: `{ "task_id": "...", "status": "processing" }`
+  - Completed: `{ "task_id": "...", "status": "completed", "result": { ...analysis... } }`
+  - Failed: `{ "task_id": "...", "status": "failed", "error": "..." }`
+
+Additional endpoints:
+- `GET /api/v1/analysis/{analysis_id}`
+- `GET /api/v1/analysis/{analysis_id}/report`
+- `GET /api/v1/analysis/history`
+- `GET /api/v1/health`
+
+All analysis routes require `Authorization: Bearer <supabase_access_token>`.
+
+## Frontend Supabase Flow
+
+```ts
+import { getSupabaseClient } from "@/lib/supabase";
+import { analyzeUpload, pollAnalysisResult } from "@/lib/api";
+
+const supabase = getSupabaseClient();
+const { data, error } = await supabase.auth.signInWithPassword({
+  email,
+  password,
+});
+if (error) throw error;
+
+const accessToken = data.session?.access_token;
+if (!accessToken) throw new Error("No Supabase access token");
+
+const queued = await analyzeUpload(file, jobDescription, accessToken);
+const analysis = await pollAnalysisResult(queued.task_id, accessToken, {
+  intervalMs: 2000,
+});
+```
+
+## Worker Command
+
+The Celery worker runs with:
+
+```bash
+celery -A app.core.celery_app worker --loglevel=info
+```

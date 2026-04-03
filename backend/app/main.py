@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.core.database import Base, engine
 from app.core.logging import configure_logging
-from app.routes.analysis import router as analysis_router
+from app.routes.analysis import analysis_router, status_router
 from app.routes.health import router as health_router
 
 settings = get_settings()
@@ -32,3 +32,4 @@ app.add_middleware(
 
 app.include_router(health_router, prefix=settings.api_prefix)
 app.include_router(analysis_router, prefix=settings.api_prefix)
+app.include_router(status_router, prefix=settings.api_prefix)

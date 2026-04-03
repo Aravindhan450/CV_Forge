@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import AnalysisRun
@@ -45,6 +45,7 @@ class AnalysisOrchestrator:
         job_description: str,
         db: AsyncSession,
         previous_analysis_id: str | None = None,
+        user_id: str | None = None,
     ) -> AnalysisResponse:
         resume_text, sections = self.resume_parser.parse_upload(filename, file_bytes)
         return await self._analyze_core(
@@ -54,6 +55,7 @@ class AnalysisOrchestrator:
             db=db,
             previous_analysis_id=previous_analysis_id,
             resume_filename=filename,
+            user_id=user_id,
         )
 
     async def analyze_text(
@@ -62,6 +64,8 @@ class AnalysisOrchestrator:
         job_description: str,
         db: AsyncSession,
         previous_analysis_id: str | None = None,
+        resume_filename: str | None = None,
+        user_id: str | None = None,
     ) -> AnalysisResponse:
         normalized_text, sections = self.resume_parser.parse_text(resume_text)
         return await self._analyze_core(
@@ -70,7 +74,8 @@ class AnalysisOrchestrator:
             job_description=job_description,
             db=db,
             previous_analysis_id=previous_analysis_id,
-            resume_filename=None,
+            resume_filename=resume_filename,
+            user_id=user_id,
         )
 
     async def _analyze_core(
@@ -81,6 +86,7 @@ class AnalysisOrchestrator:
         db: AsyncSession,
         previous_analysis_id: str | None,
         resume_filename: str | None,
+        user_id: str | None,
     ) -> AnalysisResponse:
         keyword_result = self.keyword_extractor.extract(resume_text=resume_text, job_description=job_description)
 
@@ -118,6 +124,7 @@ class AnalysisOrchestrator:
 
         record = AnalysisRun(
             previous_analysis_id=previous_analysis_id,
+            user_id=user_id,
             resume_filename=resume_filename,
             resume_text=resume_text,
             job_description=job_description,
@@ -142,8 +149,13 @@ class AnalysisOrchestrator:
 
         return self._build_response(record, delta)
 
-    async def get_analysis(self, analysis_id: str, db: AsyncSession) -> AnalysisResponse | None:
-        result = await db.execute(select(AnalysisRun).where(AnalysisRun.id == analysis_id))
+    async def get_analysis(
+        self, analysis_id: str, db: AsyncSession, user_id: str | None = None
+    ) -> AnalysisResponse | None:
+        statement = select(AnalysisRun).where(AnalysisRun.id == analysis_id)
+        if user_id:
+            statement = statement.where(AnalysisRun.user_id == user_id)
+        result = await db.execute(statement)
         record = result.scalar_one_or_none()
         if not record:
             return None
@@ -151,6 +163,16 @@ class AnalysisOrchestrator:
         previous = await self._get_previous(db, record.previous_analysis_id)
         delta = self._build_delta(record, previous)
         return self._build_response(record, delta)
+
+    async def list_history(self, db: AsyncSession, user_id: str, limit: int = 20) -> list[AnalysisRun]:
+        statement = (
+            select(AnalysisRun)
+            .where(AnalysisRun.user_id == user_id)
+            .order_by(desc(AnalysisRun.created_at))
+            .limit(limit)
+        )
+        result = await db.execute(statement)
+        return list(result.scalars().all())
 
     async def _get_previous(self, db: AsyncSession, previous_analysis_id: str | None) -> AnalysisRun | None:
         if not previous_analysis_id:

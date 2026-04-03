@@ -71,3 +71,15 @@ export type AnalysisResponse = {
     spans: HighlightSpan[];
   };
 };
+
+export type AnalysisTaskQueuedResponse = {
+  task_id: string;
+  status: "processing";
+};
+
+export type AnalysisTaskStatusResponse = {
+  task_id: string;
+  status: "processing" | "completed" | "failed";
+  result?: AnalysisResponse;
+  error?: string;
+};

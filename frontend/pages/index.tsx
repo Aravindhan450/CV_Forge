@@ -1,13 +1,14 @@
 import dynamic from "next/dynamic";
 import Head from "next/head";
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Download, Loader2, RefreshCw, UploadCloud } from "lucide-react";
 
 import { AnalysisSidebar } from "@/components/analysis-sidebar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { analyzeUpload, getReportUrl, reanalyzeResume } from "@/lib/api";
+import { analyzeUpload, downloadReport, pollAnalysisResult, reanalyzeResume } from "@/lib/api";
+import { getSupabaseClient } from "@/lib/supabase";
 import { AnalysisResponse } from "@/lib/types";
 import { KeywordPanel } from "@/keyword-panel/keyword-panel";
 import { ResumePreview } from "@/resume-preview/resume-preview";
@@ -25,14 +26,34 @@ export default function HomePage() {
   const [resumeEditorText, setResumeEditorText] = useState<string>("");
   const [loadingAnalyze, setLoadingAnalyze] = useState(false);
   const [loadingReanalyze, setLoadingReanalyze] = useState(false);
+  const [loadingReport, setLoadingReport] = useState(false);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const reportUrl = useMemo(() => {
-    if (!analysis) {
-      return "";
+  useEffect(() => {
+    let authSubscription: { unsubscribe: () => void } | null = null;
+    let mounted = true;
+    try {
+      const supabase = getSupabaseClient();
+      supabase.auth.getSession().then(({ data }) => {
+        if (mounted) {
+          setAccessToken(data.session?.access_token ?? null);
+        }
+      });
+
+      const stateListener = supabase.auth.onAuthStateChange((_event, session) => {
+        setAccessToken(session?.access_token ?? null);
+      });
+      authSubscription = stateListener.data.subscription;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Supabase client initialization failed");
     }
-    return getReportUrl(analysis.analysis_id);
-  }, [analysis]);
+
+    return () => {
+      mounted = false;
+      authSubscription?.unsubscribe();
+    };
+  }, []);
 
   async function onAnalyzeUpload() {
     if (!resumeFile) {
@@ -44,11 +65,16 @@ export default function HomePage() {
       setError("Paste a job description before analysis.");
       return;
     }
+    if (!accessToken) {
+      setError("Sign in with Supabase before running analysis.");
+      return;
+    }
 
     try {
       setLoadingAnalyze(true);
       setError(null);
-      const result = await analyzeUpload(resumeFile, jobDescription, analysis?.analysis_id);
+      const queued = await analyzeUpload(resumeFile, jobDescription, accessToken, analysis?.analysis_id);
+      const result = await pollAnalysisResult(queued.task_id, accessToken);
       setAnalysis(result);
       setResumeEditorText(result.resume_text);
     } catch (err) {
@@ -68,17 +94,51 @@ export default function HomePage() {
       setError("Job description is empty.");
       return;
     }
+    if (!accessToken) {
+      setError("Sign in with Supabase before re-analysis.");
+      return;
+    }
 
     try {
       setLoadingReanalyze(true);
       setError(null);
-      const result = await reanalyzeResume(resumeEditorText, jobDescription, analysis?.analysis_id);
+      const queued = await reanalyzeResume(
+        resumeEditorText,
+        jobDescription,
+        accessToken,
+        analysis?.analysis_id
+      );
+      const result = await pollAnalysisResult(queued.task_id, accessToken);
       setAnalysis(result);
       setResumeEditorText(result.resume_text);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Re-analysis failed");
     } finally {
       setLoadingReanalyze(false);
+    }
+  }
+
+  async function onDownloadReport() {
+    if (!analysis || !accessToken) {
+      return;
+    }
+
+    try {
+      setLoadingReport(true);
+      setError(null);
+      const blob = await downloadReport(analysis.analysis_id, accessToken);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `analysis-${analysis.analysis_id}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Report export failed");
+    } finally {
+      setLoadingReport(false);
     }
   }
 
@@ -97,12 +157,10 @@ export default function HomePage() {
           </div>
           <div className="flex gap-2">
             {analysis && (
-              <a href={reportUrl} target="_blank" rel="noreferrer">
-                <Button variant="outline" className="gap-2">
-                  <Download className="h-4 w-4" />
-                  Export PDF Report
-                </Button>
-              </a>
+              <Button variant="outline" className="gap-2" onClick={onDownloadReport} disabled={loadingReport}>
+                {loadingReport ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                Export PDF Report
+              </Button>
             )}
             <Button onClick={onAnalyzeUpload} disabled={loadingAnalyze} className="gap-2">
               {loadingAnalyze ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
