@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from keybert import KeyBERT
+from sentence_transformers import SentenceTransformer
 
 from app.core.config import get_settings
 from app.models.schemas import KeywordResult
@@ -13,11 +14,23 @@ class KeywordExtractorService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._model: KeyBERT | None = None
+        self._model_unavailable = False
 
     @property
-    def model(self) -> KeyBERT:
+    def model(self) -> KeyBERT | None:
+        if self._model_unavailable:
+            return None
         if self._model is None:
-            self._model = KeyBERT(model=self.settings.keybert_model_name)
+            try:
+                # Keep analysis responsive by avoiding runtime model downloads.
+                embedding_model = SentenceTransformer(
+                    self.settings.keybert_model_name,
+                    local_files_only=True,
+                )
+                self._model = KeyBERT(model=embedding_model)
+            except Exception:
+                self._model_unavailable = True
+                return None
         return self._model
 
     def extract(self, resume_text: str, job_description: str, top_n: int = 25) -> KeywordResult:
@@ -40,8 +53,14 @@ class KeywordExtractorService:
         if not text.strip():
             return []
 
+        model = self.model
+        if model is None:
+            tokens = re.findall(r"[A-Za-z][A-Za-z+#.-]{2,}", text)
+            filtered = [token for token in tokens if token.lower() not in _STOPWORDS]
+            return unique_preserve_order(filtered[:top_n])
+
         try:
-            keywords = self.model.extract_keywords(
+            keywords = model.extract_keywords(
                 text,
                 keyphrase_ngram_range=(1, 2),
                 stop_words="english",

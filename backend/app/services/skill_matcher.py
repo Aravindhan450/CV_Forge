@@ -12,11 +12,22 @@ class SkillMatcherService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._embedder: SentenceTransformer | None = None
+        self._embedder_unavailable = False
 
     @property
-    def embedder(self) -> SentenceTransformer:
+    def embedder(self) -> SentenceTransformer | None:
+        if self._embedder_unavailable:
+            return None
         if self._embedder is None:
-            self._embedder = SentenceTransformer(self.settings.embedding_model_name)
+            try:
+                # Avoid blocking the worker on long model downloads in startup/dev environments.
+                self._embedder = SentenceTransformer(
+                    self.settings.embedding_model_name,
+                    local_files_only=True,
+                )
+            except Exception:
+                self._embedder_unavailable = True
+                return None
         return self._embedder
 
     def match_skills(self, resume_skills: list[str], job_skills: list[str]) -> SkillMatchResult:
@@ -44,8 +55,12 @@ class SkillMatcherService:
         normalized_resume = [normalize_token(skill) for skill in cleaned_resume]
         normalized_job = [normalize_token(skill) for skill in cleaned_job]
 
-        resume_embeddings = self.embedder.encode(normalized_resume, convert_to_numpy=True, normalize_embeddings=True)
-        job_embeddings = self.embedder.encode(normalized_job, convert_to_numpy=True, normalize_embeddings=True)
+        embedder = self.embedder
+        if embedder is None:
+            return self._fallback_lexical(cleaned_resume, cleaned_job, normalized_resume, normalized_job)
+
+        resume_embeddings = embedder.encode(normalized_resume, convert_to_numpy=True, normalize_embeddings=True)
+        job_embeddings = embedder.encode(normalized_job, convert_to_numpy=True, normalize_embeddings=True)
 
         similarity = np.matmul(job_embeddings, resume_embeddings.T)
 
@@ -67,6 +82,33 @@ class SkillMatcherService:
 
         return SkillMatchResult(
             score=score,
+            matched_skills=unique_preserve_order(matched),
+            missing_skills=unique_preserve_order(missing),
+            resume_skills=cleaned_resume,
+            job_skills=cleaned_job,
+        )
+
+    def _fallback_lexical(
+        self,
+        cleaned_resume: list[str],
+        cleaned_job: list[str],
+        normalized_resume: list[str],
+        normalized_job: list[str],
+    ) -> SkillMatchResult:
+        resume_set = set(normalized_resume)
+        matched: list[str] = []
+        missing: list[str] = []
+
+        for idx, job_skill in enumerate(cleaned_job):
+            norm = normalized_job[idx]
+            if norm in resume_set:
+                matched.append(job_skill)
+            else:
+                missing.append(job_skill)
+
+        score = int((len(matched) / max(len(cleaned_job), 1)) * 100)
+        return SkillMatchResult(
+            score=max(0, min(100, score)),
             matched_skills=unique_preserve_order(matched),
             missing_skills=unique_preserve_order(missing),
             resume_skills=cleaned_resume,

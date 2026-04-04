@@ -34,25 +34,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const supabase = getSupabaseClient();
     let mounted = true;
-
-    supabase.auth.getSession().then(({ data }) => {
+    let unsubscribe: (() => void) | null = null;
+    const fallbackTimer = window.setTimeout(() => {
       if (!mounted) {
         return;
       }
-      setSession(data.session ?? null);
+      // Avoid an infinite spinner if session retrieval hangs.
       setLoading(false);
-    });
+    }, 8000);
 
-    const listener = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession ?? null);
-      setLoading(false);
-    });
+    try {
+      const supabase = getSupabaseClient();
+
+      supabase.auth
+        .getSession()
+        .then(({ data }) => {
+          if (!mounted) {
+            return;
+          }
+          setSession(data.session ?? null);
+          setLoading(false);
+        })
+        .catch(() => {
+          if (!mounted) {
+            return;
+          }
+          setSession(null);
+          setLoading(false);
+        });
+
+      const listener = supabase.auth.onAuthStateChange((_event, nextSession) => {
+        setSession(nextSession ?? null);
+        setLoading(false);
+      });
+      unsubscribe = () => listener.data.subscription.unsubscribe();
+    } catch {
+      if (mounted) {
+        setSession(null);
+        setLoading(false);
+      }
+    }
 
     return () => {
       mounted = false;
-      listener.data.subscription.unsubscribe();
+      window.clearTimeout(fallbackTimer);
+      unsubscribe?.();
     };
   }, []);
 
