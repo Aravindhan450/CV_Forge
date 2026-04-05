@@ -78,6 +78,9 @@ const STEP_DELAY_MS = [1800, 1800, 5000, 1500, 1500];
 const PDFJS_CDN_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
 const PDFJS_WORKER_CDN_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 const MAMMOTH_CDN_URL = "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js";
+const BACKEND_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000")
+  .replace(/\/api\/v1\/?$/, "")
+  .replace(/\/$/, "");
 
 const DEFAULT_RESUME = `SENIOR FULL-STACK ENGINEER
 
@@ -468,6 +471,7 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [analyzedAt, setAnalyzedAt] = useState<string>("");
   const [atsDelta, setAtsDelta] = useState<number | null>(null);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
   const resultsRef = useRef<HTMLDivElement | null>(null);
 
@@ -521,77 +525,25 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
     return { radius, circumference, offset: circumference - progress };
   }, [analysis]);
 
-  async function callAnthropic(resume: string, jd: string): Promise<AnalysisResult> {
-    const apiKey = process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new Error("Missing NEXT_PUBLIC_ANTHROPIC_API_KEY in frontend env.");
-    }
-
-    const prompt = `Analyze the resume against the job description.
-Return JSON only, no markdown, no explanation.
-
-Use this exact structure:
-{
-  "ats_score": 0,
-  "skills_score": 0,
-  "semantic_score": 0,
-  "career_score": 0,
-  "verdict": "Excellent|Good|Needs Work|Weak",
-  "suggestions": [{ "type": "warn|danger|info|success", "category": "", "title": "", "detail": "" }],
-  "keywords_found": [],
-  "keywords_missing": [],
-  "career_analysis": {
-    "current_level": "",
-    "target_level": "",
-    "transition_type": "",
-    "transferable_strengths": [],
-    "gaps": [],
-    "narrative": ""
-  },
-  "highlights": [{ "phrase": "", "type": "yellow|red|green", "reason": "" }]
-}
-
-Rules:
-- 5-8 suggestions
-- max 10 keywords in each keywords array
-- 8-15 highlights
-- every highlight phrase must exist exactly in the resume text
-
-Resume:
-${resume}
-
-Job Description:
-${jd}`;
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+  async function callBackendAnalyze(resume: string, jd: string): Promise<AnalysisResult> {
+    const response = await fetch(`${BACKEND_BASE_URL}/api/analyze`, {
       method: "POST",
       headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        messages: [{ role: "user", content: prompt }],
+        resume_text: resume,
+        jd_text: jd,
       }),
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Analysis API failed: ${response.status} ${errorText}`);
+      const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(`Analysis failed (${response.status}): ${errorData.detail || "Unknown error"}`);
     }
 
-    const payload = await response.json();
-    const outputText = Array.isArray(payload?.content)
-      ? payload.content
-          .map((part: { type?: string; text?: string }) => (part.type === "text" ? part.text || "" : ""))
-          .join("\n")
-      : "";
-
-    const cleaned = stripMarkdownFences(outputText);
-    const parsed = JSON.parse(cleaned);
-    return normalizeAnalysis(parsed, resume);
+    const result = await response.json();
+    return normalizeAnalysis(result, resume);
   }
 
   async function runAnalysis(isReanalyze: boolean): Promise<void> {
@@ -603,6 +555,8 @@ ${jd}`;
       alert("Please provide a job description.");
       return;
     }
+
+    setAnalyzeError(null);
 
     const previousAts = isReanalyze && analysis ? analysis.ats_score : null;
 
@@ -624,7 +578,7 @@ ${jd}`;
 
         if (i === 2) {
           const start = Date.now();
-          nextResult = await callAnthropic(resumeTextForAPI, jobDescriptionText);
+          nextResult = await callBackendAnalyze(resumeTextForAPI, jobDescriptionText);
           const elapsed = Date.now() - start;
           if (elapsed < STEP_DELAY_MS[i]) {
             await sleep(STEP_DELAY_MS[i] - elapsed);
@@ -657,8 +611,9 @@ ${jd}`;
         resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       }, 120);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Analysis failed.";
-      alert(message);
+      const message = error instanceof Error ? error.message : "Analysis failed. Please try again.";
+      console.error("Analysis error:", error);
+      setAnalyzeError(message);
       if (!isReanalyze) {
         setShowInputStage(true);
         setInputOpaque(false);
@@ -1144,6 +1099,42 @@ ${jd}`;
       </main>
 
       {stage === "input" && showInputStage && (
+        <>
+          {analyzeError && (
+            <div
+              style={{
+                position: "fixed",
+                bottom: "100px",
+                left: "50%",
+                transform: "translateX(-50%)",
+                background: "#fdecea",
+                border: "1px solid #f5b8b3",
+                color: "#9b2c2c",
+                borderRadius: "8px",
+                padding: "10px 20px",
+                fontSize: "12px",
+                zIndex: 100,
+                maxWidth: "500px",
+                textAlign: "center",
+              }}
+            >
+              {analyzeError}
+              <button
+                onClick={() => setAnalyzeError(null)}
+                style={{
+                  marginLeft: "12px",
+                  color: "#9b2c2c",
+                  fontWeight: 600,
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
         <button
           type="button"
           onClick={() => {
@@ -1153,6 +1144,7 @@ ${jd}`;
         >
           Analyze Resume
         </button>
+        </>
       )}
     </div>
   );

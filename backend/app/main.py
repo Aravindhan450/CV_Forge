@@ -1,13 +1,17 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.database import Base, engine
 from app.core.logging import configure_logging
-from app.routes.analysis import analysis_router, status_router
+from app.routes.analysis import analysis_router, public_analysis_router, status_router
 from app.routes.health import router as health_router
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 settings = get_settings()
 
@@ -33,3 +37,4 @@ app.add_middleware(
 app.include_router(health_router, prefix=settings.api_prefix)
 app.include_router(analysis_router, prefix=settings.api_prefix)
 app.include_router(status_router, prefix=settings.api_prefix)
+app.include_router(public_analysis_router)

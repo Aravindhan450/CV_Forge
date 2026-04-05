@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
+
+import httpx
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +33,158 @@ status_router = APIRouter(tags=["analysis"])
 orchestrator = AnalysisOrchestrator()
 report_generator = PDFReportGenerator()
 resume_parser = ResumeParserService()
+
+
+class AnalyzePayload(BaseModel):
+    resume_text: str
+    jd_text: str
+
+
+public_analysis_router = APIRouter(prefix="/api", tags=["analysis"])
+
+
+@public_analysis_router.post("/analyze")
+async def analyze_resume_public(payload: AnalyzePayload):
+    groq_key = os.environ.get("GROQ_API_KEY", "").strip().strip('"').strip("'")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip().strip('"').strip("'")
+    if groq_key:
+        provider = "groq"
+        api_key = groq_key
+    elif anthropic_key.startswith("gsk_"):
+        provider = "groq"
+        api_key = anthropic_key
+    elif anthropic_key:
+        provider = "anthropic"
+        api_key = anthropic_key
+    else:
+        raise HTTPException(status_code=500, detail="Neither GROQ_API_KEY nor ANTHROPIC_API_KEY is set")
+
+    if provider == "groq" and not api_key.startswith("gsk_"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"GROQ_API_KEY looks malformed. Starts with: '{api_key[:8]}...'",
+        )
+
+    if provider == "anthropic" and not api_key.startswith("sk-ant-"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"ANTHROPIC_API_KEY looks malformed. Starts with: '{api_key[:8]}...'",
+        )
+
+    prompt = f"""You are a senior technical recruiter and resume coach. Analyze the resume against the job description.
+
+RESUME:
+{payload.resume_text}
+
+JOB DESCRIPTION:
+{payload.jd_text}
+
+Return ONLY a JSON object, no markdown, no explanation:
+{{
+  "ats_score": <0-100>,
+  "skills_score": <0-100>,
+  "semantic_score": <0-100>,
+  "career_score": <0-100>,
+  "verdict": "<Excellent|Good|Needs Work|Weak>",
+  "suggestions": [
+    {{ "type": "<warn|danger|info|success>", "category": "<Skills|Formatting|Keywords|Impact|Tone>", "title": "<short title>", "detail": "<1-2 sentence actionable suggestion>" }}
+  ],
+  "keywords_found": ["<kw>"],
+  "keywords_missing": ["<kw>"],
+  "career_analysis": {{
+    "current_level": "<level>",
+    "target_level": "<level>",
+    "transition_type": "<Lateral|Upward|Career change|Stretch>",
+    "transferable_strengths": ["<point>"],
+    "gaps": ["<gap>"],
+    "narrative": "<2-3 sentence honest assessment>"
+  }},
+  "highlights": [
+    {{ "phrase": "<exact phrase from resume>", "type": "<yellow|red|green>", "reason": "<why>" }}
+  ]
+}}
+Rules: 5-8 suggestions, max 10 keywords each, 8-15 highlights as exact phrases present in the resume text."""
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            if provider == "groq":
+                groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+                response = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": groq_model,
+                        "temperature": 0.2,
+                        "response_format": {"type": "json_object"},
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "You are a strict JSON generator. Return only valid JSON with no markdown.",
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                    },
+                )
+            else:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": "claude-sonnet-4-20250514",
+                        "max_tokens": 1000,
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            provider_label = "Groq" if provider == "groq" else "Anthropic"
+            raise HTTPException(
+                status_code=exc.response.status_code,
+                detail=f"{provider_label} API error {exc.response.status_code}: {exc.response.text}",
+            ) from exc
+        except httpx.RequestError as exc:
+            provider_label = "Groq" if provider == "groq" else "Anthropic"
+            raise HTTPException(
+                status_code=502,
+                detail=f"Network error reaching {provider_label}: {str(exc)}",
+            ) from exc
+
+    data = response.json()
+    if provider == "groq":
+        raw_text = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+    else:
+        raw_text = "".join(
+            block.get("text", "")
+            for block in data.get("content", [])
+            if block.get("type") == "text"
+        )
+
+    clean = raw_text.strip()
+    if clean.startswith("```"):
+        clean = clean.split("\n", 1)[-1]
+        clean = clean.rsplit("```", 1)[0]
+    clean = clean.strip()
+
+    try:
+        result = json.loads(clean)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to parse Anthropic response as JSON: {str(exc)}. Raw: {clean[:200]}",
+        ) from exc
+
+    return result
 
 
 @analysis_router.post("/upload", response_model=AnalysisTaskQueuedResponse, status_code=202)
