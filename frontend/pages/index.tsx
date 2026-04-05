@@ -133,16 +133,22 @@ function scoreTone(score: number): string {
 }
 
 function scoreBadgeClasses(score: number): string {
-  if (score >= 70) return "bg-green-50 text-green-700";
-  if (score >= 45) return "bg-amber-50 text-amber-700";
-  return "bg-red-50 text-red-700";
+  if (score >= 70) return "bg-[#e8f5ee] text-[#1a7a45] border border-[#b6dfc8]";
+  if (score >= 45) return "bg-[#fff8e6] text-[#8a6000] border border-[#f0d080]";
+  return "bg-[#fdecea] text-[#9b2c2c] border border-[#f5b8b3]";
 }
 
 function suggestionClasses(type: SuggestionType): string {
-  if (type === "success") return "bg-green-50 border-green-200 text-green-700";
-  if (type === "warn") return "bg-amber-50 border-amber-200 text-amber-700";
-  if (type === "danger") return "bg-red-50 border-red-200 text-red-700";
-  return "bg-blue-50 border-blue-200 text-blue-700";
+  if (type === "success") return "bg-[#f0fff6] border-[#b8f0d0] text-[#0a5a30]";
+  if (type === "warn") return "bg-[#fffbf0] border-[#f0d080] text-[#7a5a00]";
+  if (type === "danger") return "bg-[#fff5f5] border-[#ffcccc] text-[#8a1a1a]";
+  return "bg-[#f0f6ff] border-[#b8d4f8] text-[#1a4f8a]";
+}
+
+function scoreBarColor(score: number): string {
+  if (score >= 70) return "#1a7a45";
+  if (score >= 45) return "#e0a800";
+  return "#c0392b";
 }
 
 function normalizeAnalysis(raw: unknown, resumeText: string): AnalysisResult {
@@ -502,7 +508,8 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
 
   useEffect(() => {
     const style = document.createElement("style");
-    style.textContent = "@keyframes spin { to { transform: rotate(360deg); } }";
+    style.textContent =
+      "@keyframes spin { to { transform: rotate(360deg); } } @keyframes fadeSlideUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }";
     document.head.appendChild(style);
 
     return () => {
@@ -936,161 +943,232 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
         {analysis && stage === "results" && (
           <section
             ref={resultsRef}
-            className={`border-t border-[#D2D2D4] pt-8 px-6 pb-16 transition-opacity duration-300 ease-in-out ${
+            className={`border-t border-[#D2D2D4] transition-opacity duration-300 ease-in-out ${
               resultsVisible ? "opacity-100" : "opacity-0"
             }`}
           >
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center">
-                <h2 className="text-sm font-medium text-[#1a1a1a]">Analysis Results</h2>
-                <span className="text-xs text-[#9b9b9b] ml-3">{analyzedAt}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={resetToInputStage}
-                  className="border border-[#D2D2D4] text-xs text-[#1a1a1a] bg-[#F4F4F6] rounded-md px-3 py-1.5 hover:bg-[#E7E7E7] transition-all duration-150"
-                >
-                  ← Analyze Another
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void runAnalysis(true);
-                  }}
-                  className="border border-[#D2D2D4] text-xs text-[#1a1a1a] bg-[#F4F4F6] rounded-md px-3 py-1.5 transition-all duration-150 hover:border-[#FF634A] hover:text-[#FF634A]"
-                >
-                  ↻ Re-analyze
-                </button>
-                <button
-                  type="button"
-                  onClick={exportReport}
-                  className="border border-[#D2D2D4] text-xs text-[#1a1a1a] bg-[#F4F4F6] rounded-md px-3 py-1.5 transition-all duration-150 hover:border-[#FF634A] hover:text-[#FF634A]"
-                >
-                  ↓ Export PDF
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-4 gap-4 mb-8">
-              <div className="bg-[#E7E7E7] border-2 border-[#D2D2D4] rounded-lg p-4 text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
-                <div className="mx-auto relative w-20 h-20 mb-2">
-                  <svg className="w-20 h-20 -rotate-90" viewBox="0 0 64 64">
-                    <circle cx="32" cy="32" r={ring.radius} fill="none" className="stroke-[#D2D2D4]" strokeWidth="5" />
-                    <circle
-                      cx="32"
-                      cy="32"
-                      r={ring.radius}
-                      fill="none"
-                      className="stroke-[#FF634A] transition-[stroke-dashoffset] duration-700 ease-out"
-                      strokeWidth="5"
-                      strokeLinecap="round"
-                      strokeDasharray={ring.circumference}
-                      strokeDashoffset={ring.offset}
-                    />
-                  </svg>
-                  <div className="absolute inset-0 flex items-center justify-center text-2xl font-medium text-[#1a1a1a]">
-                    {analysis.ats_score}
-                  </div>
+            <div className="max-w-[1200px] mx-auto px-6 pt-8 pb-20">
+              <div
+                className="flex items-center justify-between mb-7"
+                style={{ animation: "fadeSlideUp 0.4s ease-out 0s both" }}
+              >
+                <div className="flex flex-col">
+                  <h2 className="text-[18px] font-semibold text-[#111] tracking-[-0.02em]">Analysis Results</h2>
+                  <span className="text-[11px] text-[#9b9b9b] mt-0.5">{analyzedAt}</span>
                 </div>
-                <div
-                  className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${scoreBadgeClasses(
-                    analysis.ats_score
-                  )}`}
-                >
-                  {scoreTone(analysis.ats_score)}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={resetToInputStage}
+                    className="border border-[#D2D2D4] bg-white text-[#1a1a1a] px-[14px] py-2 rounded-lg text-[12px] transition-all duration-150 cursor-pointer hover:border-[#FF634A] hover:text-[#FF634A]"
+                  >
+                    ← Analyze Another
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void runAnalysis(true);
+                    }}
+                    className="border border-[#D2D2D4] bg-white text-[#1a1a1a] px-[14px] py-2 rounded-lg text-[12px] transition-all duration-150 cursor-pointer hover:border-[#FF634A] hover:text-[#FF634A]"
+                  >
+                    ↻ Re-analyze
+                  </button>
+                  <button
+                    type="button"
+                    onClick={exportReport}
+                    className="bg-[#FF634A] text-white border-0 px-4 py-2 rounded-lg text-[12px] font-medium transition-all duration-150 cursor-pointer hover:bg-[#e8553d] hover:shadow-[0_4px_12px_rgba(255,99,74,0.3)]"
+                  >
+                    ↓ Export PDF
+                  </button>
                 </div>
-                {atsDelta !== null && (
-                  <div className={`text-[10px] mt-1 ${atsDelta >= 0 ? "text-[#FF634A]" : "text-red-600"}`}>
-                    {atsDelta >= 0 ? "↑" : "↓"} {Math.abs(atsDelta)}
+              </div>
+
+              <div
+                className="grid gap-3 mb-8 grid-cols-1 md:grid-cols-2 xl:[grid-template-columns:320px_1fr_1fr_1fr]"
+                style={{ animation: "fadeSlideUp 0.4s ease-out 0.1s both" }}
+              >
+                <div className="bg-white border border-[#E7E7E7] rounded-2xl px-6 py-7 min-h-[220px] flex flex-col items-center justify-center gap-3 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,0,0,0.07)]">
+                  <div className="mx-auto relative w-[100px] h-[100px]">
+                    <svg className="w-[100px] h-[100px] -rotate-90" viewBox="0 0 64 64">
+                      <circle cx="32" cy="32" r={ring.radius} fill="none" stroke="#F0F0F0" strokeWidth="8" />
+                      <circle
+                        cx="32"
+                        cy="32"
+                        r={ring.radius}
+                        fill="none"
+                        stroke="#FF634A"
+                        strokeWidth="8"
+                        strokeLinecap="round"
+                        strokeDasharray={ring.circumference}
+                        strokeDashoffset={ring.offset}
+                        style={{ transition: "stroke-dashoffset 1s ease-out" }}
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center text-[28px] font-bold text-[#111]">
+                      {analysis.ats_score}
+                    </div>
                   </div>
-                )}
-              </div>
 
-              <div className="bg-[#D2D2D4] border border-[#D2D2D4] rounded-lg p-4 text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
-                <div className="text-2xl font-medium text-[#1a1a1a]">{analysis.skills_score}%</div>
-                <div className="text-xs text-[#6b6b6b] mt-1">Skills</div>
-              </div>
-              <div className="bg-[#D2D2D4] border border-[#D2D2D4] rounded-lg p-4 text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
-                <div className="text-2xl font-medium text-[#1a1a1a]">{analysis.semantic_score}%</div>
-                <div className="text-xs text-[#6b6b6b] mt-1">Semantic</div>
-              </div>
-              <div className="bg-[#D2D2D4] border border-[#D2D2D4] rounded-lg p-4 text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
-                <div className="text-2xl font-medium text-[#1a1a1a]">{analysis.career_score}%</div>
-                <div className="text-xs text-[#6b6b6b] mt-1">Career</div>
-              </div>
-            </div>
+                  <div className={`inline-flex rounded-full px-[14px] py-1 text-[12px] font-medium ${scoreBadgeClasses(analysis.ats_score)}`}>
+                    {analysis.verdict}
+                  </div>
 
-            <div className="grid grid-cols-3 gap-4 mb-8">
-              <div>
-                <div className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide mb-3">Fixes / Suggestions</div>
-                {analysis.suggestions.map((s, idx) => (
-                  <div key={`${s.title}-${idx}`} className={`rounded-md border p-3 mb-2 text-xs leading-relaxed transition-all duration-150 hover:translate-x-[3px] hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] ${suggestionClasses(s.type)}`}>
-                    <div className="text-[9px] font-medium uppercase tracking-wide opacity-60 mb-1">{s.category}</div>
-                    <div className="font-medium">{s.title}</div>
-                    <div className="mt-1">{s.detail}</div>
+                  {atsDelta !== null && (
+                    <div className={`text-[11px] mt-1 ${atsDelta >= 0 ? "text-[#1a7a45]" : "text-[#c0392b]"}`}>
+                      {atsDelta >= 0 ? "+" : "-"}
+                      {Math.abs(atsDelta)} from previous run
+                    </div>
+                  )}
+
+                  <div className="text-[10px] text-[#9b9b9b] uppercase tracking-[0.08em] mt-1">ATS Compatibility Score</div>
+                </div>
+
+                {[
+                  { label: "Skills", value: analysis.skills_score },
+                  { label: "Semantic", value: analysis.semantic_score },
+                  { label: "Career", value: analysis.career_score },
+                ].map((item) => (
+                  <div
+                    key={item.label}
+                    className="bg-white border border-[#E7E7E7] rounded-2xl px-5 py-6 flex flex-col justify-between transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,0,0,0.07)]"
+                  >
+                    <div>
+                      <div className="text-[36px] leading-none font-bold text-[#111] tracking-[-0.02em]">{item.value}</div>
+                      <div className="text-[11px] text-[#9b9b9b] uppercase tracking-[0.08em] mt-1">{item.label}</div>
+                    </div>
+                    <div className="h-1 bg-[#F0F0F0] rounded-sm mt-4 overflow-hidden">
+                      <div
+                        className="h-full rounded-sm transition-[width] duration-1000 ease-out"
+                        style={{ width: `${item.value}%`, backgroundColor: scoreBarColor(item.value) }}
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
 
-              <div>
-                <div className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide mb-3">Keywords</div>
-
-                <div className="text-[10px] font-medium text-[#9b9b9b] uppercase tracking-wide mb-2 mt-3">Found</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {analysis.keywords_found.map((k) => (
-                    <span key={`found-${k}`} className="text-[10px] px-2 py-0.5 bg-green-50 border border-green-200 text-green-700 rounded-full transition-all duration-150 hover:scale-105">
-                      {k}
+              <div
+                className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8 items-start"
+                style={{ animation: "fadeSlideUp 0.4s ease-out 0.2s both" }}
+              >
+                <div className="bg-white border border-[#E7E7E7] rounded-2xl overflow-hidden">
+                  <div className="px-5 py-4 border-b border-[#F0F0F0] flex items-center justify-between">
+                    <div className="text-[12px] font-semibold text-[#111] uppercase tracking-[0.06em]">Fixes / Suggestions</div>
+                    <span className="text-[11px] bg-[#F4F4F6] text-[#6b6b6b] rounded-[20px] px-2 py-[2px]">
+                      {analysis.suggestions.length}
                     </span>
-                  ))}
-                </div>
-
-                <div className="text-[10px] font-medium text-[#9b9b9b] uppercase tracking-wide mb-2 mt-3">Missing</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {analysis.keywords_missing.map((k) => (
-                    <span key={`missing-${k}`} className="text-[10px] px-2 py-0.5 bg-red-50 border border-red-200 text-red-700 rounded-full transition-all duration-150 hover:scale-105">
-                      {k}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide mb-3">Career Fit</div>
-                <div className="grid grid-cols-2 gap-2 mb-3">
-                  <div className="bg-[#D2D2D4] border border-[#D2D2D4] rounded-md p-2">
-                    <div className="text-[10px] font-medium text-[#6b6b6b] uppercase tracking-wide">Current</div>
-                    <div className="text-xs text-[#1a1a1a] mt-1">{analysis.career_analysis.current_level}</div>
                   </div>
-                  <div className="bg-[#D2D2D4] border border-[#D2D2D4] rounded-md p-2">
-                    <div className="text-[10px] font-medium text-[#6b6b6b] uppercase tracking-wide">Target</div>
-                    <div className="text-xs text-[#1a1a1a] mt-1">{analysis.career_analysis.target_level}</div>
+                  <div className="p-4">
+                    {analysis.suggestions.map((s, idx) => (
+                      <div
+                        key={`${s.title}-${idx}`}
+                        className={`rounded-[10px] p-3 mb-2 border text-[11.5px] leading-relaxed transition-[transform,box-shadow] duration-150 hover:translate-x-[3px] hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] ${suggestionClasses(s.type)}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[9px] font-bold uppercase tracking-[0.08em] px-[7px] py-[2px] rounded bg-[rgba(0,0,0,0.06)]">
+                            {s.category}
+                          </span>
+                          <span className="text-[9px] font-bold uppercase tracking-[0.08em] opacity-80">{s.type}</span>
+                        </div>
+                        <div className="text-[13px] font-semibold mt-1.5 mb-1">{s.title}</div>
+                        <div className="opacity-85">{s.detail}</div>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
-                <div className="bg-blue-50 border border-blue-200 rounded-md p-2 text-xs text-blue-700 mb-3">
-                  {analysis.career_analysis.transition_type}
-                </div>
-
-                <div className="space-y-1.5">
-                  {analysis.career_analysis.transferable_strengths.map((s) => (
-                    <div key={`strength-${s}`} className="bg-green-50 border border-green-200 rounded-md px-2 py-1 text-xs text-green-700">
-                      {s}
+                <div className="bg-white border border-[#E7E7E7] rounded-2xl overflow-hidden">
+                  <div className="px-5 py-4 border-b border-[#F0F0F0] flex items-center justify-between">
+                    <div className="text-[12px] font-semibold text-[#111] uppercase tracking-[0.06em]">Keywords</div>
+                    <span className="text-[11px] bg-[#F4F4F6] text-[#6b6b6b] rounded-[20px] px-2 py-[2px]">
+                      {analysis.keywords_found.length + analysis.keywords_missing.length}
+                    </span>
+                  </div>
+                  <div className="p-4">
+                    <div className="text-[10px] font-semibold text-[#1a7a45] uppercase tracking-[0.06em] mb-2 flex items-center gap-1.5">
+                      <span>✓</span>
+                      <span>FOUND</span>
                     </div>
-                  ))}
-                </div>
-
-                <div className="space-y-1.5 mt-2">
-                  {analysis.career_analysis.gaps.map((g) => (
-                    <div key={`gap-${g}`} className="bg-red-50 border border-red-200 rounded-md px-2 py-1 text-xs text-red-700">
-                      {g}
+                    <div className="flex flex-wrap gap-1.5">
+                      {analysis.keywords_found.map((k) => (
+                        <span
+                          key={`found-${k}`}
+                          className="text-[11px] font-medium px-2.5 py-1 rounded-full bg-[#f0fff6] border border-[#b8f0d0] text-[#0a5a30] transition-all duration-150 hover:bg-[#0a5a30] hover:text-white"
+                        >
+                          {k}
+                        </span>
+                      ))}
                     </div>
-                  ))}
+
+                    <div className="h-px bg-[#F0F0F0] my-3" />
+
+                    <div className="text-[10px] font-semibold text-[#9b2c2c] uppercase tracking-[0.06em] mb-2 flex items-center gap-1.5">
+                      <span>✗</span>
+                      <span>MISSING</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {analysis.keywords_missing.map((k) => (
+                        <span
+                          key={`missing-${k}`}
+                          className="text-[11px] font-medium px-2.5 py-1 rounded-full bg-[#fff5f5] border border-[#ffcccc] text-[#8a1a1a] transition-all duration-150 hover:bg-[#8a1a1a] hover:text-white"
+                        >
+                          {k}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
-                <p className="bg-[#F4F4F6] border border-[#D2D2D4] rounded-md p-3 text-xs text-[#6b6b6b] leading-relaxed mt-2">
-                  {analysis.career_analysis.narrative}
-                </p>
+                <div className="bg-white border border-[#E7E7E7] rounded-2xl overflow-hidden">
+                  <div className="px-5 py-4 border-b border-[#F0F0F0] flex items-center justify-between">
+                    <div className="text-[12px] font-semibold text-[#111] uppercase tracking-[0.06em]">Career Fit</div>
+                    <span className="text-[11px] bg-[#F4F4F6] text-[#6b6b6b] rounded-[20px] px-2 py-[2px]">
+                      {analysis.career_analysis.transferable_strengths.length + analysis.career_analysis.gaps.length}
+                    </span>
+                  </div>
+                  <div className="p-4">
+                    <div className="grid grid-cols-2 gap-2 mb-3">
+                      <div className="bg-[#F4F4F6] rounded-[10px] p-3">
+                        <div className="text-[9px] font-bold uppercase tracking-[0.06em] text-[#9b9b9b] mb-1">Current</div>
+                        <div className="text-[13px] font-semibold text-[#111]">{analysis.career_analysis.current_level}</div>
+                      </div>
+                      <div className="bg-[#F4F4F6] rounded-[10px] p-3">
+                        <div className="text-[9px] font-bold uppercase tracking-[0.06em] text-[#9b9b9b] mb-1">Target</div>
+                        <div className="text-[13px] font-semibold text-[#111]">{analysis.career_analysis.target_level}</div>
+                      </div>
+                    </div>
+
+                    <div className="w-full bg-[#f0f6ff] border border-[#b8d4f8] text-[#1a4f8a] rounded-lg px-3 py-2 text-[12px] font-medium text-center mb-3">
+                      {analysis.career_analysis.transition_type}
+                    </div>
+
+                    <div className="text-[10px] font-bold text-[#0a5a30] uppercase tracking-[0.06em] mb-1.5">Strengths</div>
+                    {analysis.career_analysis.transferable_strengths.map((s) => (
+                      <div key={`strength-${s}`} className="flex items-start gap-2 mb-1.5">
+                        <span className="w-4 h-4 rounded-full bg-[#f0fff6] border border-[#b8f0d0] text-[#0a5a30] text-[9px] flex items-center justify-center shrink-0">
+                          ✓
+                        </span>
+                        <span className="text-[11.5px] text-[#333] leading-[1.6]">{s}</span>
+                      </div>
+                    ))}
+
+                    <div className="h-px bg-[#F0F0F0] my-3" />
+
+                    <div className="text-[10px] font-bold text-[#8a1a1a] uppercase tracking-[0.06em] mb-1.5">Gaps</div>
+                    {analysis.career_analysis.gaps.map((g) => (
+                      <div key={`gap-${g}`} className="flex items-start gap-2 mb-1.5">
+                        <span className="w-4 h-4 rounded-full bg-[#fff5f5] border border-[#ffcccc] text-[#8a1a1a] text-[9px] flex items-center justify-center shrink-0">
+                          ✗
+                        </span>
+                        <span className="text-[11.5px] text-[#333] leading-[1.6]">{g}</span>
+                      </div>
+                    ))}
+
+                    <p className="text-[11.5px] text-[#555] leading-[1.75] bg-[#F4F4F6] rounded-lg p-3 border-l-[3px] border-[#FF634A] mt-3">
+                      {analysis.career_analysis.narrative}
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
 
