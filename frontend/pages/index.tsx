@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject, type PropsWithChildren } from "react";
+import { useCVForgeStore } from "@/store/useCVForgeStore";
 
 declare global {
   interface Window {
@@ -9,7 +10,14 @@ declare global {
 
 type Stage = "input" | "loading" | "results";
 type SuggestionType = "warn" | "danger" | "info" | "success";
-type HighlightType = "yellow" | "red" | "green";
+type HighlightType = "yellow" | "red" | "green" | "missing keyword" | "weak phrasing" | "strong match";
+
+type HighlightCoordinates = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 
 type Suggestion = {
   type: SuggestionType;
@@ -31,6 +39,8 @@ type HighlightItem = {
   phrase: string;
   type: HighlightType;
   reason: string;
+  page?: number;
+  coordinates?: HighlightCoordinates;
 };
 
 type AnalysisResult = {
@@ -68,11 +78,11 @@ type MammothLib = {
 
 const ACCEPTED_TYPES = ".txt,.pdf,.docx";
 const STEPS = [
-  "Parsing resume content",
-  "Extracting skills & keywords",
-  "Running semantic fit analysis",
-  "Evaluating career trajectory",
-  "Generating ATS report",
+  "Parsing Resume",
+  "Extracting Skills",
+  "Matching Job Description",
+  "Running AI Analysis",
+  "Generating Suggestions",
 ];
 const STEP_DELAY_MS = [1800, 1800, 5000, 1500, 1500];
 const PDFJS_CDN_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
@@ -145,10 +155,249 @@ function suggestionClasses(type: SuggestionType): string {
   return "bg-[#f0f6ff] border-[#b8d4f8] text-[#1a4f8a]";
 }
 
+function suggestionIcon(category: string): string {
+  const normalized = category.trim().toLowerCase();
+  if (normalized.includes("skill")) return "⚡";
+  if (normalized.includes("format")) return "📄";
+  if (normalized.includes("keyword")) return "🔑";
+  if (normalized.includes("impact")) return "📊";
+  return "💡";
+}
+
+function suggestionIconSeverityClasses(type: SuggestionType): string {
+  if (type === "success") return "bg-[#e8f5ee] text-[#1a7a45]";
+  if (type === "warn") return "bg-[#fff8e6] text-[#8a6000]";
+  if (type === "danger") return "bg-[#fdecea] text-[#9b2c2c]";
+  return "bg-[#f0f6ff] text-[#1a4f8a]";
+}
+
+function groupMissingKeywords(keywords: string[]): { critical: string[]; optional: string[] } {
+  const criticalSignals = [
+    "python",
+    "fastapi",
+    "react",
+    "next",
+    "typescript",
+    "pytorch",
+    "tensorflow",
+    "docker",
+    "postgres",
+    "redis",
+    "kubernetes",
+    "aws",
+    "machine learning",
+    "ml",
+    "ai",
+    "llm",
+    "nlp",
+    "sql",
+    "api",
+  ];
+
+  const critical: string[] = [];
+  const optional: string[] = [];
+
+  for (const keyword of keywords) {
+    const normalized = keyword.trim().toLowerCase();
+    const isCritical = criticalSignals.some((signal) => normalized.includes(signal));
+    if (isCritical) {
+      critical.push(keyword);
+    } else {
+      optional.push(keyword);
+    }
+  }
+
+  return { critical, optional };
+}
+
 function scoreBarColor(score: number): string {
   if (score >= 70) return "#1a7a45";
   if (score >= 45) return "#e0a800";
   return "#c0392b";
+}
+
+function scoreLabel(score: number): string {
+  if (score >= 90) return "Excellent";
+  if (score >= 80) return "Strong";
+  if (score >= 70) return "Good";
+  if (score >= 60) return "Fair";
+  return "Needs Improvement";
+}
+
+function scoreLabelBadgeClasses(score: number): string {
+  if (score >= 90) return "bg-[#e8f5ee] text-[#1a7a45] border border-[#b6dfc8]";
+  if (score >= 80) return "bg-[#eef8f1] text-[#216e4d] border border-[#c6e7d5]";
+  if (score >= 70) return "bg-[#f0f6ff] text-[#1a4f8a] border border-[#b8d4f8]";
+  if (score >= 60) return "bg-[#fff8e6] text-[#8a6000] border border-[#f0d080]";
+  return "bg-[#fdecea] text-[#9b2c2c] border border-[#f5b8b3]";
+}
+
+function resolveHighlightVisualType(type: string): "red" | "yellow" | "green" {
+  const normalized = type.trim().toLowerCase();
+  if (normalized.includes("missing") || normalized === "red") return "red";
+  if (normalized.includes("weak") || normalized === "yellow") return "yellow";
+  if (normalized.includes("strong") || normalized === "green") return "green";
+  return "yellow";
+}
+
+function highlightOverlayStyles(type: HighlightType): { border: string; background: string; text: string } {
+  const visualType = resolveHighlightVisualType(type);
+  if (visualType === "red") {
+    return {
+      border: "2px solid #d14343",
+      background: "rgba(209, 67, 67, 0.12)",
+      text: "#7f1d1d",
+    };
+  }
+  if (visualType === "green") {
+    return {
+      border: "2px solid #1a7a45",
+      background: "rgba(26, 122, 69, 0.12)",
+      text: "#0a5a30",
+    };
+  }
+  return {
+    border: "2px solid #e0a800",
+    background: "rgba(224, 168, 0, 0.15)",
+    text: "#7a5a00",
+  };
+}
+
+function InteractiveCard({ children, className = "" }: PropsWithChildren<{ className?: string }>): JSX.Element {
+  return (
+    <div
+      className={`bg-white border border-[#E7E7E7] rounded-2xl transition-all duration-300 ease-out hover:-translate-y-1 hover:shadow-lg hover:border-[#ffc8bf] ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+type ResumePreviewProps = {
+  resumeFile: File | null;
+  resumeURL: string | null;
+  resumePreviewType: "none" | "pdf" | "text";
+  previewCurrentPage: number;
+  previewTotalPages: number;
+  previewContainerRef: MutableRefObject<HTMLDivElement | null>;
+  onPreviewScroll: () => void;
+  onZoomOut: () => void;
+  onZoomIn: () => void;
+  onDownload: () => void;
+  onEnsurePdfRender: () => void;
+};
+
+function ResumePreview({
+  resumeFile,
+  resumeURL,
+  resumePreviewType,
+  previewCurrentPage,
+  previewTotalPages,
+  previewContainerRef,
+  onPreviewScroll,
+  onZoomOut,
+  onZoomIn,
+  onDownload,
+  onEnsurePdfRender,
+}: ResumePreviewProps): JSX.Element {
+  const lastRenderedURLRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (resumePreviewType !== "pdf" || !resumeFile || !resumeURL) return;
+    if (lastRenderedURLRef.current === resumeURL) return;
+
+    onEnsurePdfRender();
+    lastRenderedURLRef.current = resumeURL;
+  }, [resumeFile, resumePreviewType, resumeURL, onEnsurePdfRender]);
+
+  return (
+    <div className="flex flex-col min-h-0 h-[calc(100vh-52px)] bg-[#E7E7E7] overflow-hidden">
+      <div className="sticky top-0 z-10 h-12 border-b border-[#D2D2D4] bg-[#E7E7E7] px-4 flex items-center justify-between">
+        <div className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide">Resume Preview</div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onZoomOut}
+            disabled={resumePreviewType !== "pdf"}
+            className="w-7 h-7 inline-flex items-center justify-center rounded-md border border-[#D2D2D4] bg-white text-[#6b6b6b] transition-all duration-150 hover:border-[#FF634A] hover:text-[#FF634A] disabled:opacity-40 disabled:cursor-not-allowed"
+            aria-label="Zoom out"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
+              <path d="M5 12h14" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={onZoomIn}
+            disabled={resumePreviewType !== "pdf"}
+            className="w-7 h-7 inline-flex items-center justify-center rounded-md border border-[#D2D2D4] bg-white text-[#6b6b6b] transition-all duration-150 hover:border-[#FF634A] hover:text-[#FF634A] disabled:opacity-40 disabled:cursor-not-allowed"
+            aria-label="Zoom in"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+          <span className="text-[11px] text-[#6b6b6b] min-w-[68px] text-center">Page {previewCurrentPage} / {previewTotalPages}</span>
+          <button
+            type="button"
+            onClick={onDownload}
+            className="w-7 h-7 inline-flex items-center justify-center rounded-md border border-[#D2D2D4] bg-white text-[#6b6b6b] transition-all duration-150 hover:border-[#FF634A] hover:text-[#FF634A]"
+            aria-label="Download resume"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
+              <path d="M12 3v12" />
+              <path d="m7 10 5 5 5-5" />
+              <path d="M5 21h14" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div className="preview-chrome relative flex-1 min-h-0 h-full bg-[#D2D2D4]">
+        <div
+          id="pdf-canvas-container"
+          ref={previewContainerRef}
+          className="preview-chrome"
+          onScroll={onPreviewScroll}
+          style={{
+            height: "100%",
+            overflowY: "auto",
+            padding: "20px",
+            backgroundColor: "#D2D2D4",
+          }}
+        />
+
+        {!resumeFile && resumePreviewType === "none" && (
+          <div
+            id="preview-placeholder"
+            className="absolute inset-0 flex items-center justify-center p-5 pointer-events-none"
+          >
+            <div className="w-full max-w-[380px] rounded-xl border border-dashed border-[#d2d2d4] bg-[#f8f8fa] px-8 py-10 text-center">
+              <div className="mx-auto mb-4 w-12 h-12 rounded-lg bg-white border border-[#e7e7e7] flex items-center justify-center text-gray-500">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  className="w-6 h-6"
+                >
+                  <path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />
+                  <path d="M14 3v6h6" />
+                  <path d="M9 13h6M9 17h6" />
+                </svg>
+              </div>
+              <h3 className="text-sm font-semibold text-[#1a1a1a] tracking-[-0.01em]">Resume Preview</h3>
+              <p className="mt-2 text-xs text-gray-500 leading-relaxed">
+                Upload a resume to see a live preview here.
+              </p>
+              <p className="mt-3 text-[11px] text-gray-500">PDF • DOCX • TXT</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function normalizeAnalysis(raw: unknown, resumeText: string): AnalysisResult {
@@ -198,14 +447,50 @@ function normalizeAnalysis(raw: unknown, resumeText: string): AnalysisResult {
       if (!item || typeof item !== "object") return null;
       const x = item as Record<string, unknown>;
       const phrase = String(x.phrase || "").trim();
-      if (!phrase) return null;
-      if (!resumeLower.includes(phrase.toLowerCase())) return null;
-      const t = String(x.type || "yellow") as HighlightType;
-      const safeType: HighlightType = t === "yellow" || t === "red" || t === "green" ? t : "yellow";
+      const rawType = String(x.type || "yellow").trim().toLowerCase();
+      const safeType: HighlightType =
+        rawType === "yellow" ||
+        rawType === "red" ||
+        rawType === "green" ||
+        rawType === "missing keyword" ||
+        rawType === "weak phrasing" ||
+        rawType === "strong match"
+          ? (rawType as HighlightType)
+          : "yellow";
+
+      const pageValue = Number(x.page);
+      const page = Number.isFinite(pageValue) && pageValue >= 1 ? Math.round(pageValue) : undefined;
+
+      const c = x.coordinates;
+      let coordinates: HighlightCoordinates | undefined;
+      if (c && typeof c === "object") {
+        const coords = c as Record<string, unknown>;
+        const cx = Number(coords.x);
+        const cy = Number(coords.y);
+        const cw = Number(coords.width);
+        const ch = Number(coords.height);
+        if ([cx, cy, cw, ch].every((n) => Number.isFinite(n))) {
+          coordinates = {
+            x: Math.max(0, Math.min(1, cx)),
+            y: Math.max(0, Math.min(1, cy)),
+            width: Math.max(0.01, Math.min(1, cw)),
+            height: Math.max(0.01, Math.min(1, ch)),
+          };
+        }
+      }
+
+      // For text-only highlights, keep previous phrase validation.
+      if (!coordinates) {
+        if (!phrase) return null;
+        if (!resumeLower.includes(phrase.toLowerCase())) return null;
+      }
+
       return {
         phrase,
         type: safeType,
         reason: String(x.reason || "Review this phrase."),
+        page,
+        coordinates,
       };
     })
     .filter(Boolean)
@@ -467,19 +752,39 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
   const [resultsVisible, setResultsVisible] = useState<boolean>(false);
   const [resumeText, setResumeText] = useState<string>(DEFAULT_RESUME);
   const [resumeTextForAPI, setResumeTextForAPI] = useState<string>(DEFAULT_RESUME);
-  const [jobDescriptionText, setJobDescriptionText] = useState<string>(DEFAULT_JD);
   const [resumeFileName, setResumeFileName] = useState<string>("");
   const [jdFileName, setJdFileName] = useState<string>("");
   const [resumePreviewStatus, setResumePreviewStatus] = useState<string | null>(null);
-
+  const [isResumeDragOver, setIsResumeDragOver] = useState<boolean>(false);
   const [activeStep, setActiveStep] = useState<number>(-1);
   const [doneSteps, setDoneSteps] = useState<number>(0);
-  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [analyzedAt, setAnalyzedAt] = useState<string>("");
   const [atsDelta, setAtsDelta] = useState<number | null>(null);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [previewZoom, setPreviewZoom] = useState<number>(1);
+  const [previewTotalPages, setPreviewTotalPages] = useState<number>(1);
+  const [previewCurrentPage, setPreviewCurrentPage] = useState<number>(1);
+  const [resumePreviewType, setResumePreviewType] = useState<"none" | "pdf" | "text">("none");
+
+  const {
+    resumeFile: resumeSourceFile,
+    resumeURL,
+    jobDescription: jobDescriptionText,
+    analysisResult,
+    setResumeFile,
+    setResumeURL,
+    setJobDescription,
+    setAnalysisResult,
+  } = useCVForgeStore();
+
+  const analysis = (analysisResult as AnalysisResult | null) ?? null;
+
+  const MIN_PREVIEW_ZOOM = 0.6;
+  const MAX_PREVIEW_ZOOM = 2;
+  const PREVIEW_ZOOM_STEP = 0.1;
 
   const resultsRef = useRef<HTMLDivElement | null>(null);
+  const previewContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const loadPDFJS = async (): Promise<void> => {
@@ -531,6 +836,248 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
     const progress = (score / 100) * circumference;
     return { radius, circumference, offset: circumference - progress };
   }, [analysis]);
+
+  const missingKeywordGroups = useMemo(() => {
+    if (!analysis) return { critical: [], optional: [] };
+    return groupMissingKeywords(analysis.keywords_missing);
+  }, [analysis]);
+
+  useEffect(() => {
+    if (!jobDescriptionText.trim()) {
+      setJobDescription(DEFAULT_JD);
+    }
+  }, [jobDescriptionText, setJobDescription]);
+
+  useEffect(() => {
+    if (!(stage === "input" && showInputStage)) return;
+
+    if (resumeSourceFile && resumePreviewType === "pdf") {
+      void renderPDFToCanvas(resumeSourceFile, previewZoom);
+      return;
+    }
+
+    if (resumePreviewType === "text") {
+      renderTextPreview(resumeText);
+    }
+  }, [stage, showInputStage, resumeSourceFile, resumePreviewType, previewZoom, resumeText]);
+
+  async function renderPDFToCanvas(file: File, zoomLevel: number = 1): Promise<number> {
+    let attempts = 0;
+    while (!window.pdfjsLib && attempts < 20) {
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
+      attempts += 1;
+    }
+    if (!window.pdfjsLib) {
+      console.error("PDF.js failed to load");
+      return 0;
+    }
+
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN_URL;
+
+    const container = previewContainerRef.current;
+    if (!container) return 0;
+
+    container.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:300px;gap:12px">
+        <div style="width:28px;height:28px;border:2px solid #D2D2D4;border-top-color:#FF634A;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+        <span style="font-size:11px;color:#9b9b9b">Rendering preview...</span>
+      </div>
+    `;
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      container.innerHTML = "";
+      setPreviewTotalPages(pdf.numPages);
+      setPreviewCurrentPage(1);
+
+      let renderedPages = 0;
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
+        const page = await pdf.getPage(pageNum);
+
+        const desiredWidth = 680;
+        const viewport = page.getViewport({ scale: 1 });
+        const scale = (desiredWidth / viewport.width) * zoomLevel;
+        const scaledViewport = page.getViewport({ scale });
+
+        const wrapper = document.createElement("div");
+        wrapper.style.cssText = `
+          position: relative;
+          background: white;
+          box-shadow: 0 2px 16px rgba(0,0,0,0.12);
+          border-radius: 2px;
+          margin: 0 auto 20px auto;
+          width: ${scaledViewport.width}px;
+          overflow: hidden;
+        `;
+        wrapper.dataset.pageNumber = String(pageNum);
+
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.floor(scaledViewport.width);
+        canvas.height = Math.floor(scaledViewport.height);
+        canvas.style.cssText = "display:block;width:100%;height:auto";
+
+        wrapper.appendChild(canvas);
+        container.appendChild(wrapper);
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        await page.render({
+          canvasContext: ctx,
+          viewport: scaledViewport,
+          background: "white",
+        }).promise;
+
+        const pageHighlights = (analysis?.highlights || []).filter(
+          (h) => h.page === pageNum && h.coordinates
+        );
+
+        if (pageHighlights.length) {
+          const overlayLayer = document.createElement("div");
+          overlayLayer.style.cssText = `
+            position:absolute;
+            inset:0;
+            pointer-events:none;
+            z-index:5;
+          `;
+
+          for (const highlight of pageHighlights) {
+            if (!highlight.coordinates) continue;
+            const { x, y, width, height } = highlight.coordinates;
+            const overlayBox = document.createElement("div");
+            const palette = highlightOverlayStyles(highlight.type);
+            overlayBox.style.cssText = `
+              position:absolute;
+              left:${x * 100}%;
+              top:${y * 100}%;
+              width:${width * 100}%;
+              height:${height * 100}%;
+              border:${palette.border};
+              background:${palette.background};
+              border-radius:4px;
+              pointer-events:auto;
+              cursor:help;
+              transition:transform 160ms ease, box-shadow 160ms ease;
+            `;
+
+            const tooltip = document.createElement("div");
+            tooltip.textContent = highlight.reason;
+            tooltip.style.cssText = `
+              position:absolute;
+              left:0;
+              bottom:calc(100% + 6px);
+              max-width:260px;
+              padding:6px 8px;
+              border-radius:6px;
+              border:1px solid #d2d2d4;
+              background:#ffffff;
+              color:${palette.text};
+              font-size:11px;
+              line-height:1.4;
+              box-shadow:0 8px 20px rgba(0,0,0,0.16);
+              opacity:0;
+              transform:translateY(4px);
+              pointer-events:none;
+              transition:opacity 140ms ease, transform 140ms ease;
+              z-index:20;
+            `;
+
+            overlayBox.appendChild(tooltip);
+
+            overlayBox.addEventListener("mouseenter", () => {
+              overlayBox.style.transform = "scale(1.01)";
+              overlayBox.style.boxShadow = "0 0 0 2px rgba(255,255,255,0.55) inset";
+              tooltip.style.opacity = "1";
+              tooltip.style.transform = "translateY(0)";
+            });
+
+            overlayBox.addEventListener("mouseleave", () => {
+              overlayBox.style.transform = "scale(1)";
+              overlayBox.style.boxShadow = "none";
+              tooltip.style.opacity = "0";
+              tooltip.style.transform = "translateY(4px)";
+            });
+
+            overlayLayer.appendChild(overlayBox);
+          }
+
+          wrapper.appendChild(overlayLayer);
+        }
+
+        renderedPages += 1;
+      }
+
+      return renderedPages;
+    } catch (err) {
+      console.error("PDF render error:", err);
+      container.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:center;height:200px;color:#FF634A;font-size:12px;padding:20px;text-align:center">
+          Could not render PDF preview. Please paste your resume text in the left panel instead.
+        </div>
+      `;
+      return 0;
+    }
+  }
+
+  function handlePreviewScroll(): void {
+    if (resumePreviewType !== "pdf") return;
+    const container = previewContainerRef.current;
+    if (!container) return;
+
+    const pageNodes = Array.from(container.querySelectorAll<HTMLElement>("[data-page-number]"));
+    if (!pageNodes.length) {
+      setPreviewCurrentPage(1);
+      return;
+    }
+
+    const viewportMid = container.scrollTop + container.clientHeight / 2;
+    let closestPage = 1;
+    let smallestDistance = Number.POSITIVE_INFINITY;
+
+    for (const node of pageNodes) {
+      const pageNumber = Number(node.dataset.pageNumber || "1");
+      const mid = node.offsetTop + node.offsetHeight / 2;
+      const distance = Math.abs(mid - viewportMid);
+      if (distance < smallestDistance) {
+        smallestDistance = distance;
+        closestPage = pageNumber;
+      }
+    }
+
+    setPreviewCurrentPage(closestPage);
+  }
+
+  function handleZoom(delta: number): void {
+    if (resumePreviewType !== "pdf" || !resumeSourceFile) return;
+    const nextZoom = Math.min(MAX_PREVIEW_ZOOM, Math.max(MIN_PREVIEW_ZOOM, previewZoom + delta));
+    if (nextZoom === previewZoom) return;
+    setPreviewZoom(nextZoom);
+    void renderPDFToCanvas(resumeSourceFile, nextZoom);
+  }
+
+  function downloadPreviewSource(): void {
+    if (resumeSourceFile) {
+      const url = URL.createObjectURL(resumeSourceFile);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = resumeSourceFile.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      return;
+    }
+
+    const blob = new Blob([resumeText], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "resume.txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 
   async function callBackendAnalyze(resume: string, jd: string): Promise<AnalysisResult> {
     const response = await fetch(`${BACKEND_BASE_URL}/api/analyze`, {
@@ -601,7 +1148,7 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
         throw new Error("No analysis result returned.");
       }
 
-      setAnalysis(nextResult);
+      setAnalysisResult(nextResult);
       setAnalyzedAt(new Date().toLocaleString());
       if (previousAts === null) {
         setAtsDelta(null);
@@ -636,7 +1183,7 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
 
   function resetToInputStage(): void {
     setStage("input");
-    setAnalysis(null);
+    setAnalysisResult(null);
     setAnalyzedAt("");
     setAtsDelta(null);
     setActiveStep(-1);
@@ -651,36 +1198,87 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
   }
 
   function renderLoadingSteps(): JSX.Element {
+    const stepIcons = [
+      <svg key="parse" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="w-4 h-4">
+        <path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />
+        <path d="M14 3v6h6" />
+      </svg>,
+      <svg key="skills" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="w-4 h-4">
+        <path d="M4 12h16" />
+        <path d="M4 7h16" />
+        <path d="M4 17h10" />
+      </svg>,
+      <svg key="match" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="w-4 h-4">
+        <path d="m8 8 8 8" />
+        <path d="m16 8-8 8" />
+        <path d="M4 12h4m8 0h4" />
+      </svg>,
+      <svg key="ai" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="w-4 h-4">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+      </svg>,
+      <svg key="suggest" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="w-4 h-4">
+        <path d="M9 18h6" />
+        <path d="M10 22h4" />
+        <path d="M12 2a7 7 0 0 0-4 12.8c.5.4 1 .9 1.2 1.5L10 18h4l.8-1.7c.2-.6.7-1.1 1.2-1.5A7 7 0 0 0 12 2Z" />
+      </svg>,
+    ];
+
     return (
-      <div className="w-full max-w-[400px] flex flex-col gap-2">
+      <div className="w-full max-w-[440px] flex flex-col gap-2">
         {STEPS.map((step, index) => {
           const done = index < doneSteps;
           const active = index === activeStep && !done;
+          const pending = !done && !active;
+
           return (
             <div
               key={step}
-              className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-all duration-300 ${
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all duration-300 ${
                 done
-                  ? "border-[#D2D2D4] bg-[#E7E7E7]"
+                  ? "border-[#b8f0d0] bg-[#f0fff6]"
                   : active
-                    ? "border-[#FF634A] bg-[#E7E7E7]"
+                    ? "border-[#FF634A] bg-[#fff7f5] shadow-sm"
                     : "border-[#D2D2D4] bg-[#F4F4F6]"
               }`}
+              style={{ transitionDelay: `${index * 80}ms` }}
             >
-              {done && (
-                <span className="w-4 h-4 rounded-full bg-[#FF634A] text-white text-[9px] flex items-center justify-center">
-                  ✓
-                </span>
-              )}
-              {active && <span className="w-4 h-4 rounded-full border-2 border-[#FF634A] animate-spin" />}
-              {!done && !active && <span className="w-4 h-4 rounded-full border border-[#D2D2D4]" />}
               <span
-                className={`text-xs ${
-                  done ? "text-[#FF634A]" : active ? "font-medium text-[#1a1a1a]" : "text-[#9b9b9b]"
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition-all duration-300 ${
+                  done
+                    ? "bg-[#1a7a45] text-white"
+                    : active
+                      ? "bg-white border border-[#FF634A] text-[#FF634A]"
+                      : "bg-white border border-[#D2D2D4] text-[#9b9b9b]"
                 }`}
               >
-                {step}
+                {done ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="w-3.5 h-3.5">
+                    <path d="m5 13 4 4L19 7" />
+                  </svg>
+                ) : active ? (
+                  <span className="w-3.5 h-3.5 rounded-full border-2 border-[#FF634A] border-t-transparent animate-spin" />
+                ) : (
+                  stepIcons[index]
+                )}
               </span>
+
+              <div className="flex flex-col">
+                <span
+                  className={`text-sm transition-colors duration-300 ${
+                    done
+                      ? "text-[#1a7a45] font-medium"
+                      : active
+                        ? "text-[#1a1a1a] font-semibold"
+                        : "text-[#9b9b9b]"
+                  }`}
+                >
+                  {step}
+                </span>
+                <span className={`text-[11px] mt-0.5 ${done ? "text-[#3c8e5f]" : active ? "text-[#FF634A]" : "text-[#b2b2b2]"}`}>
+                  {done ? "Completed" : active ? "In progress..." : pending ? "Waiting" : ""}
+                </span>
+              </div>
             </div>
           );
         })}
@@ -694,18 +1292,33 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
     const ext = fileName.split(".").pop()?.toLowerCase() || "";
     setResumeFileName(file.name);
 
+    if (resumeURL) {
+      URL.revokeObjectURL(resumeURL);
+    }
+    const nextResumeURL = URL.createObjectURL(file);
+    setResumeFile(file);
+    setResumeURL(nextResumeURL);
+
     try {
       if (ext === "pdf") {
-        void renderPDFToCanvas(file);
+        setResumePreviewType("pdf");
+        setPreviewCurrentPage(1);
+        void renderPDFToCanvas(file, previewZoom);
         const text = await extractTextForAPI(file);
         setResumeText(text);
         setResumeTextForAPI(text);
       } else if (ext === "docx") {
+        setResumePreviewType("text");
+        setPreviewTotalPages(1);
+        setPreviewCurrentPage(1);
         const text = await extractDocxText(file);
         setResumeText(text);
         setResumeTextForAPI(text);
         renderTextPreview(text);
       } else {
+        setResumePreviewType("text");
+        setPreviewTotalPages(1);
+        setPreviewCurrentPage(1);
         const extractedText = await readFileAsText(file);
         setResumeText(extractedText);
         setResumeTextForAPI(extractedText);
@@ -728,7 +1341,7 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
     try {
       const content = await parseUploadToText(file, "jd");
       setJdFileName(file.name);
-      setJobDescriptionText(content);
+      setJobDescription(content);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to process file.";
       alert(message);
@@ -762,7 +1375,7 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
   }
 
   function renderTextPreview(text: string): void {
-    const container = document.getElementById("pdf-canvas-container") as HTMLDivElement | null;
+    const container = previewContainerRef.current;
     if (!container) return;
 
     const lines = text.split("\n");
@@ -787,6 +1400,8 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
 
     container.innerHTML = "";
     container.appendChild(wrapper);
+    setPreviewTotalPages(1);
+    setPreviewCurrentPage(1);
   }
 
   return (
@@ -820,20 +1435,63 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
               </div>
 
               <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
-                <label className="mx-4 mt-3 border-[1.5px] border-dashed border-[#D2D2D4] bg-[#F4F4F6] rounded-lg p-5 text-center cursor-pointer relative transition-all duration-200 ease-in-out hover:border-[#FF634A] hover:bg-[#fff1ee] hover:scale-[1.01]">
+                <div className="mx-4 mt-3">
+                  <div className="text-xs font-semibold text-[#1a1a1a] tracking-[0.02em] mb-2">Upload Resume</div>
+                </div>
+
+                <label
+                  className={`mx-4 border-[1.5px] border-dashed rounded-xl p-5 text-center cursor-pointer relative transition-all duration-200 ease-in-out hover:scale-[1.01] ${
+                    isResumeDragOver
+                      ? "border-[#FF634A] bg-[#fff6f3]"
+                      : "border-[#D2D2D4] bg-[#F4F4F6] hover:border-[#FF634A] hover:bg-[#fff1ee]"
+                  }`}
+                  onDragEnter={() => setIsResumeDragOver(true)}
+                  onDragLeave={() => setIsResumeDragOver(false)}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setIsResumeDragOver(true);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setIsResumeDragOver(false);
+                    void handleResumeUpload(event.dataTransfer.files?.[0] ?? null);
+                  }}
+                >
                   <input
                     type="file"
                     accept={ACCEPTED_TYPES}
                     className="absolute inset-0 opacity-0 cursor-pointer"
                     onChange={(event) => {
+                      setIsResumeDragOver(false);
                       void handleResumeUpload(event.target.files?.[0] ?? null);
                     }}
                   />
-                  <div className="text-base text-[#6b6b6b]">⬆</div>
-                  <div className="text-xs text-[#6b6b6b] mt-2">Drop resume file or click to upload</div>
-                  <div className="text-xs text-[#9b9b9b] mt-1">Accepted: .txt, .pdf, .docx</div>
+
+                  <div className="mx-auto w-10 h-10 rounded-lg bg-white border border-[#E7E7E7] flex items-center justify-center text-[#6b6b6b]">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      className="w-5 h-5"
+                    >
+                      <path d="M12 16V8" />
+                      <path d="m8.5 11.5 3.5-3.5 3.5 3.5" />
+                      <path d="M20 16.5a3.5 3.5 0 0 0-1.8-6.5 5.5 5.5 0 0 0-10.7 1.3A3.2 3.2 0 0 0 8 18h9" />
+                    </svg>
+                  </div>
+
+                  <div className="text-sm text-[#1a1a1a] font-medium mt-3">
+                    {resumeFileName ? "File chosen" : "Drag & drop your resume"}
+                  </div>
+                  {!resumeFileName && <div className="text-xs text-[#6b6b6b] mt-1">or click to browse</div>}
+                  {!resumeFileName && (
+                    <div className="text-[11px] text-[#9b9b9b] mt-2">Supported formats: PDF, DOCX, TXT</div>
+                  )}
+
                   {resumeFileName && (
-                    <div className="inline-flex bg-[#fff1ee] text-[#FF634A] border border-[#ffc4b8] rounded-full px-3 py-1 text-xs font-medium mt-2 transition-all duration-200 hover:bg-[#FF634A] hover:text-white">
+                    <div className="inline-flex rounded-full bg-orange-100 text-orange-600 px-3 py-1 text-xs font-medium mt-3">
                       {resumeFileName}
                     </div>
                   )}
@@ -846,6 +1504,15 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
                   onChange={(event) => {
                     setResumeText(event.target.value);
                     setResumeTextForAPI(event.target.value);
+                    setResumePreviewType("text");
+                    if (resumeURL) {
+                      URL.revokeObjectURL(resumeURL);
+                    }
+                    setResumeFile(null);
+                    setResumeURL(null);
+                    setResumeFileName("");
+                    setPreviewTotalPages(1);
+                    setPreviewCurrentPage(1);
                     renderTextPreview(event.target.value);
                     setResumePreviewStatus(null);
                   }}
@@ -871,11 +1538,29 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
                       void handleJDUpload(event.target.files?.[0] ?? null);
                     }}
                   />
-                  <div className="text-base text-[#6b6b6b]">⬆</div>
-                  <div className="text-xs text-[#6b6b6b] mt-2">Drop JD file or click to upload</div>
-                  <div className="text-xs text-[#9b9b9b] mt-1">Accepted: .txt, .pdf, .docx</div>
+                  <div className="mx-auto w-10 h-10 rounded-lg bg-white border border-[#E7E7E7] flex items-center justify-center text-[#6b6b6b]">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      className="w-5 h-5"
+                    >
+                      <path d="M12 16V8" />
+                      <path d="m8.5 11.5 3.5-3.5 3.5 3.5" />
+                      <path d="M20 16.5a3.5 3.5 0 0 0-1.8-6.5 5.5 5.5 0 0 0-10.7 1.3A3.2 3.2 0 0 0 8 18h9" />
+                    </svg>
+                  </div>
+                  <div className="text-sm text-[#1a1a1a] font-medium mt-3">
+                    {jdFileName ? "File chosen" : "Drag & drop your job description"}
+                  </div>
+                  {!jdFileName && <div className="text-xs text-[#6b6b6b] mt-1">or click to browse</div>}
+                  {!jdFileName && (
+                    <div className="text-[11px] text-[#9b9b9b] mt-2">Supported formats: PDF, DOCX, TXT</div>
+                  )}
                   {jdFileName && (
-                    <div className="inline-flex bg-[#fff1ee] text-[#FF634A] border border-[#ffc4b8] rounded-full px-3 py-1 text-xs font-medium mt-2 transition-all duration-200 hover:bg-[#FF634A] hover:text-white">
+                    <div className="inline-flex rounded-full bg-orange-100 text-orange-600 px-3 py-1 text-xs font-medium mt-3">
                       {jdFileName}
                     </div>
                   )}
@@ -885,52 +1570,44 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
 
                 <textarea
                   value={jobDescriptionText}
-                  onChange={(event) => setJobDescriptionText(event.target.value)}
+                  onChange={(event) => setJobDescription(event.target.value)}
                   placeholder="Paste job description here..."
                   className="mx-4 mb-4 w-[calc(100%-2rem)] flex-1 min-h-0 bg-[#F4F4F6] border border-[#D2D2D4] rounded-lg p-3 text-xs text-[#1a1a1a] leading-relaxed resize-none focus:outline-none focus:border-[#D2D2D4] placeholder-[#9b9b9b]"
                 />
               </div>
             </div>
-          </div>
 
-          <div className="flex flex-col min-h-0 h-[calc(100vh-52px)] bg-[#E7E7E7] overflow-hidden">
-            <div className="px-5 py-3 border-b border-[#D2D2D4] flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#FF634A]" />
-              <span className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide">Resume Preview</span>
-            </div>
-
-            <div className="preview-chrome flex-1 min-h-0 h-full bg-[#D2D2D4] overflow-y-auto">
-              <div
-                id="pdf-canvas-container"
-                className="preview-chrome"
-                style={{
-                  height: "100%",
-                  overflowY: "auto",
-                  padding: "20px",
-                  backgroundColor: "#D2D2D4",
+            <div className="px-4 pb-4 pt-4 mt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  void runAnalysis(false);
                 }}
+                disabled={!resumeTextForAPI.trim() || !jobDescriptionText.trim()}
+                className="w-full bg-[#FF634A] text-white rounded-lg py-3 font-medium transition-all duration-200 hover:bg-[#ff4b2f] hover:scale-[1.02] disabled:bg-[#ffb2a6] disabled:text-white/90 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:bg-[#ffb2a6]"
               >
-                <div
-                  id="preview-placeholder"
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    height: "100%",
-                    minHeight: "500px",
-                    color: "#aaa",
-                    fontSize: "12px",
-                    textAlign: "center",
-                    gap: "10px",
-                  }}
-                >
-                  <div style={{ fontSize: "28px" }}>📄</div>
-                  <div>Upload or paste your resume to preview it here</div>
-                </div>
-              </div>
+                Analyze Resume
+              </button>
             </div>
           </div>
+
+          <ResumePreview
+            resumeFile={resumeSourceFile}
+            resumeURL={resumeURL}
+            resumePreviewType={resumePreviewType}
+            previewCurrentPage={previewCurrentPage}
+            previewTotalPages={previewTotalPages}
+            previewContainerRef={previewContainerRef}
+            onPreviewScroll={handlePreviewScroll}
+            onZoomOut={() => handleZoom(-PREVIEW_ZOOM_STEP)}
+            onZoomIn={() => handleZoom(PREVIEW_ZOOM_STEP)}
+            onDownload={downloadPreviewSource}
+            onEnsurePdfRender={() => {
+              if (resumeSourceFile) {
+                void renderPDFToCanvas(resumeSourceFile, previewZoom);
+              }
+            }}
+          />
         </section>
         )}
 
@@ -988,7 +1665,7 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
                 className="grid gap-3 mb-8 grid-cols-1 md:grid-cols-2 xl:[grid-template-columns:320px_1fr_1fr_1fr]"
                 style={{ animation: "fadeSlideUp 0.4s ease-out 0.1s both" }}
               >
-                <div className="bg-white border border-[#E7E7E7] rounded-2xl px-6 py-7 min-h-[220px] flex flex-col items-center justify-center gap-3 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,0,0,0.07)]">
+                <InteractiveCard className="px-6 py-7 min-h-[220px] flex flex-col items-center">
                   <div className="mx-auto relative w-[100px] h-[100px]">
                     <svg className="w-[100px] h-[100px] -rotate-90" viewBox="0 0 64 64">
                       <circle cx="32" cy="32" r={ring.radius} fill="none" stroke="#F0F0F0" strokeWidth="8" />
@@ -1010,10 +1687,6 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
                     </div>
                   </div>
 
-                  <div className={`inline-flex rounded-full px-[14px] py-1 text-[12px] font-medium ${scoreBadgeClasses(analysis.ats_score)}`}>
-                    {analysis.verdict}
-                  </div>
-
                   {atsDelta !== null && (
                     <div className={`text-[11px] mt-1 ${atsDelta >= 0 ? "text-[#1a7a45]" : "text-[#c0392b]"}`}>
                       {atsDelta >= 0 ? "+" : "-"}
@@ -1022,28 +1695,37 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
                   )}
 
                   <div className="text-[10px] text-[#9b9b9b] uppercase tracking-[0.08em] mt-1">ATS Compatibility Score</div>
-                </div>
+
+                  <div className={`inline-flex rounded-full px-[12px] py-1 text-[11px] font-medium mt-auto ${scoreLabelBadgeClasses(analysis.ats_score)}`}>
+                    {scoreLabel(analysis.ats_score)}
+                  </div>
+                </InteractiveCard>
 
                 {[
                   { label: "Skills", value: analysis.skills_score },
                   { label: "Semantic", value: analysis.semantic_score },
                   { label: "Career", value: analysis.career_score },
                 ].map((item) => (
-                  <div
+                  <InteractiveCard
                     key={item.label}
-                    className="bg-white border border-[#E7E7E7] rounded-2xl px-5 py-6 flex flex-col justify-between transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,0,0,0.07)]"
+                    className="px-5 py-6 flex flex-col justify-between"
                   >
                     <div>
                       <div className="text-[36px] leading-none font-bold text-[#111] tracking-[-0.02em]">{item.value}</div>
                       <div className="text-[11px] text-[#9b9b9b] uppercase tracking-[0.08em] mt-1">{item.label}</div>
                     </div>
-                    <div className="h-1 bg-[#F0F0F0] rounded-sm mt-4 overflow-hidden">
-                      <div
-                        className="h-full rounded-sm transition-[width] duration-1000 ease-out"
-                        style={{ width: `${item.value}%`, backgroundColor: scoreBarColor(item.value) }}
-                      />
+                    <div className="mt-4">
+                      <div className="h-1 bg-[#F0F0F0] rounded-sm overflow-hidden">
+                        <div
+                          className="h-full rounded-sm transition-[width] duration-1000 ease-out"
+                          style={{ width: `${item.value}%`, backgroundColor: scoreBarColor(item.value) }}
+                        />
+                      </div>
+                      <div className={`inline-flex rounded-full px-[10px] py-[3px] text-[10px] font-medium mt-3 ${scoreLabelBadgeClasses(item.value)}`}>
+                        {scoreLabel(item.value)}
+                      </div>
                     </div>
-                  </div>
+                  </InteractiveCard>
                 ))}
               </div>
 
@@ -1051,7 +1733,7 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
                 className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8 items-start"
                 style={{ animation: "fadeSlideUp 0.4s ease-out 0.2s both" }}
               >
-                <div className="bg-white border border-[#E7E7E7] rounded-2xl overflow-hidden">
+                <InteractiveCard className="overflow-hidden">
                   <div className="px-5 py-4 border-b border-[#F0F0F0] flex items-center justify-between">
                     <div className="text-[12px] font-semibold text-[#111] uppercase tracking-[0.06em]">Fixes / Suggestions</div>
                     <span className="text-[11px] bg-[#F4F4F6] text-[#6b6b6b] rounded-[20px] px-2 py-[2px]">
@@ -1062,12 +1744,17 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
                     {analysis.suggestions.map((s, idx) => (
                       <div
                         key={`${s.title}-${idx}`}
-                        className={`rounded-[10px] p-3 mb-2 border text-[11.5px] leading-relaxed transition-[transform,box-shadow] duration-150 hover:translate-x-[3px] hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] ${suggestionClasses(s.type)}`}
+                        className={`rounded-[10px] p-3 mb-2 border text-[11.5px] leading-relaxed transition-all duration-200 hover:-translate-y-1 hover:shadow-md ${suggestionClasses(s.type)}`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-[9px] font-bold uppercase tracking-[0.08em] px-[7px] py-[2px] rounded bg-[rgba(0,0,0,0.06)]">
-                            {s.category}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex w-5 h-5 items-center justify-center rounded-full text-[11px] ${suggestionIconSeverityClasses(s.type)}`}>
+                              {suggestionIcon(s.category)}
+                            </span>
+                            <span className="text-[9px] font-bold uppercase tracking-[0.08em] px-[7px] py-[2px] rounded bg-[rgba(0,0,0,0.06)]">
+                              {s.category}
+                            </span>
+                          </div>
                           <span className="text-[9px] font-bold uppercase tracking-[0.08em] opacity-80">{s.type}</span>
                         </div>
                         <div className="text-[13px] font-semibold mt-1.5 mb-1">{s.title}</div>
@@ -1075,9 +1762,9 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
                       </div>
                     ))}
                   </div>
-                </div>
+                </InteractiveCard>
 
-                <div className="bg-white border border-[#E7E7E7] rounded-2xl overflow-hidden">
+                <InteractiveCard className="overflow-hidden">
                   <div className="px-5 py-4 border-b border-[#F0F0F0] flex items-center justify-between">
                     <div className="text-[12px] font-semibold text-[#111] uppercase tracking-[0.06em]">Keywords</div>
                     <span className="text-[11px] bg-[#F4F4F6] text-[#6b6b6b] rounded-[20px] px-2 py-[2px]">
@@ -1093,7 +1780,7 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
                       {analysis.keywords_found.map((k) => (
                         <span
                           key={`found-${k}`}
-                          className="text-[11px] font-medium px-2.5 py-1 rounded-full bg-[#f0fff6] border border-[#b8f0d0] text-[#0a5a30] transition-all duration-150 hover:bg-[#0a5a30] hover:text-white"
+                          className="rounded-full px-3 py-1 text-sm font-medium bg-[#f0fff6] border border-[#b8f0d0] text-[#0a5a30] transition-all duration-150 hover:bg-[#0a5a30] hover:text-white"
                         >
                           {k}
                         </span>
@@ -1104,22 +1791,45 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
 
                     <div className="text-[10px] font-semibold text-[#9b2c2c] uppercase tracking-[0.06em] mb-2 flex items-center gap-1.5">
                       <span>✗</span>
-                      <span>MISSING</span>
+                      <span>CRITICAL MISSING</span>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                      {analysis.keywords_missing.map((k) => (
+                      {missingKeywordGroups.critical.map((k) => (
                         <span
-                          key={`missing-${k}`}
-                          className="text-[11px] font-medium px-2.5 py-1 rounded-full bg-[#fff5f5] border border-[#ffcccc] text-[#8a1a1a] transition-all duration-150 hover:bg-[#8a1a1a] hover:text-white"
+                          key={`critical-${k}`}
+                          className="rounded-full px-3 py-1 text-sm font-medium bg-[#fff5f5] border border-[#ffcccc] text-[#8a1a1a] transition-all duration-150 hover:bg-gray-200"
                         >
                           {k}
                         </span>
                       ))}
+                      {missingKeywordGroups.critical.length === 0 && (
+                        <span className="text-[11px] text-[#9b9b9b]">None</span>
+                      )}
+                    </div>
+
+                    <div className="h-px bg-[#F0F0F0] my-3" />
+
+                    <div className="text-[10px] font-semibold text-[#b86a00] uppercase tracking-[0.06em] mb-2 flex items-center gap-1.5">
+                      <span>•</span>
+                      <span>NICE TO HAVE</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {missingKeywordGroups.optional.map((k) => (
+                        <span
+                          key={`optional-${k}`}
+                          className="rounded-full px-3 py-1 text-sm font-medium bg-[#fff7eb] border border-[#ffd6a6] text-[#b86a00] transition-all duration-150 hover:bg-gray-200"
+                        >
+                          {k}
+                        </span>
+                      ))}
+                      {missingKeywordGroups.optional.length === 0 && (
+                        <span className="text-[11px] text-[#9b9b9b]">None</span>
+                      )}
                     </div>
                   </div>
-                </div>
+                </InteractiveCard>
 
-                <div className="bg-white border border-[#E7E7E7] rounded-2xl overflow-hidden">
+                <InteractiveCard className="overflow-hidden">
                   <div className="px-5 py-4 border-b border-[#F0F0F0] flex items-center justify-between">
                     <div className="text-[12px] font-semibold text-[#111] uppercase tracking-[0.06em]">Career Fit</div>
                     <span className="text-[11px] bg-[#F4F4F6] text-[#6b6b6b] rounded-[20px] px-2 py-[2px]">
@@ -1168,7 +1878,7 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
                       {analysis.career_analysis.narrative}
                     </p>
                   </div>
-                </div>
+                </InteractiveCard>
               </div>
             </div>
 
@@ -1213,15 +1923,6 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
             </div>
           )}
 
-        <button
-          type="button"
-          onClick={() => {
-            void runAnalysis(false);
-          }}
-          className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 bg-[#FF634A] text-white text-sm font-medium px-10 py-3 rounded-xl shadow-[0_4px_16px_rgba(255,99,74,0.35)] transition-all duration-200 hover:-translate-y-[2px] hover:shadow-[0_8px_24px_rgba(255,99,74,0.4)] active:translate-y-0"
-        >
-          Analyze Resume
-        </button>
         </>
       )}
     </div>
