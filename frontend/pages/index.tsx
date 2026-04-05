@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type Stage = "idle" | "loading" | "results";
+declare global {
+  interface Window {
+    pdfjsLib?: PdfJsLib;
+    mammoth?: MammothLib;
+  }
+}
+
+type Stage = "input" | "loading" | "results";
 type SuggestionType = "warn" | "danger" | "info" | "success";
 type HighlightType = "yellow" | "red" | "green";
 
@@ -39,26 +46,25 @@ type AnalysisResult = {
   highlights: HighlightItem[];
 };
 
-type TooltipState = {
-  visible: boolean;
-  x: number;
-  y: number;
-  text: string;
+type PdfTextItem = {
+  str?: string;
+  fontName?: string;
+  transform: [number, number, number, number, number, number];
+};
+type PdfPage = {
+  getTextContent: (options?: { normalizeWhitespace?: boolean }) => Promise<{ items: PdfTextItem[] }>;
+  getViewport: (options: { scale: number }) => { width: number; height: number };
+  render: (options: { canvasContext: CanvasRenderingContext2D; viewport: unknown; background?: string }) => { promise: Promise<void> };
+};
+type PdfDocument = { numPages: number; getPage: (pageNum: number) => Promise<PdfPage> };
+type PdfJsLib = {
+  GlobalWorkerOptions: { workerSrc: string };
+  getDocument: (src: { data: ArrayBuffer }) => { promise: Promise<PdfDocument> };
 };
 
-type HighlightSegment = {
-  start: number;
-  end: number;
-  item: HighlightItem;
+type MammothLib = {
+  extractRawText: (options: { arrayBuffer: ArrayBuffer }) => Promise<{ value: string }>;
 };
-
-type MonacoEditorType = React.ComponentType<{
-  height?: string;
-  defaultLanguage?: string;
-  value?: string;
-  theme?: string;
-  options?: Record<string, unknown>;
-}>;
 
 const ACCEPTED_TYPES = ".txt,.pdf,.docx";
 const STEPS = [
@@ -69,6 +75,9 @@ const STEPS = [
   "Generating ATS report",
 ];
 const STEP_DELAY_MS = [1800, 1800, 5000, 1500, 1500];
+const PDFJS_CDN_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+const PDFJS_WORKER_CDN_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const MAMMOTH_CDN_URL = "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js";
 
 const DEFAULT_RESUME = `SENIOR FULL-STACK ENGINEER
 
@@ -131,39 +140,6 @@ function suggestionClasses(type: SuggestionType): string {
   if (type === "warn") return "bg-amber-50 border-amber-200 text-amber-700";
   if (type === "danger") return "bg-red-50 border-red-200 text-red-700";
   return "bg-blue-50 border-blue-200 text-blue-700";
-}
-
-function highlightClasses(type: HighlightType): string {
-  if (type === "green") return "border-b-2 border-green-500 cursor-pointer";
-  if (type === "red") return "border-b-2 border-red-400 cursor-pointer";
-  return "border-b-2 border-amber-400 cursor-pointer";
-}
-
-function buildHighlightSegments(text: string, highlights: HighlightItem[]): HighlightSegment[] {
-  const textLower = text.toLowerCase();
-  const ordered = [...highlights].sort((a, b) => b.phrase.length - a.phrase.length);
-  const segments: HighlightSegment[] = [];
-
-  for (const item of ordered) {
-    const phrase = item.phrase.trim();
-    if (!phrase) continue;
-    const phraseLower = phrase.toLowerCase();
-
-    let searchFrom = 0;
-    while (searchFrom < textLower.length) {
-      const idx = textLower.indexOf(phraseLower, searchFrom);
-      if (idx === -1) break;
-      const end = idx + phrase.length;
-      const overlap = segments.some((s) => !(end <= s.start || idx >= s.end));
-      if (!overlap) {
-        segments.push({ start: idx, end, item });
-        break;
-      }
-      searchFrom = idx + 1;
-    }
-  }
-
-  return segments.sort((a, b) => a.start - b.start);
 }
 
 function normalizeAnalysis(raw: unknown, resumeText: string): AnalysisResult {
@@ -272,10 +248,10 @@ function buildExportHtml(
 ): string {
   const suggestionHtml = result.suggestions
     .map(
-      (s) => `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:8px;">
-        <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;">${escapeHtml(s.category)}</div>
-        <div style="font-size:13px;color:#111827;margin-top:4px;">${escapeHtml(s.title)}</div>
-        <div style="font-size:12px;color:#374151;margin-top:6px;line-height:1.6;">${escapeHtml(s.detail)}</div>
+      (s) => `<div style="border:1px solid #D2D2D4;border-radius:8px;padding:10px;margin-bottom:8px;background:#E7E7E7;">
+        <div style="font-size:11px;color:#6b6b6b;text-transform:uppercase;letter-spacing:.04em;">${escapeHtml(s.category)}</div>
+        <div style="font-size:13px;color:#1a1a1a;margin-top:4px;">${escapeHtml(s.title)}</div>
+        <div style="font-size:12px;color:#6b6b6b;margin-top:6px;line-height:1.6;">${escapeHtml(s.detail)}</div>
       </div>`
     )
     .join("");
@@ -293,14 +269,14 @@ function buildExportHtml(
   <meta charset="utf-8" />
   <title>CV FORGE Report</title>
   <style>
-    body { margin: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #111827; }
-    .muted { color: #6b7280; font-size: 12px; }
+    body { margin: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1a1a1a; background:#F4F4F6; }
+    .muted { color: #6b6b6b; font-size: 12px; }
     .grid { display:grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 12px 0 20px; }
-    .cell { border:1px solid #e5e7eb; border-radius:8px; background:#f9fafb; padding:10px; }
-    .label { font-size:11px; color:#9ca3af; text-transform:uppercase; letter-spacing:.04em; }
+    .cell { border:1px solid #D2D2D4; border-radius:8px; background:#E7E7E7; padding:10px; }
+    .label { font-size:11px; color:#6b6b6b; text-transform:uppercase; letter-spacing:.04em; }
     .value { font-size:20px; margin-top:4px; }
     h2 { font-size:14px; margin: 18px 0 8px; font-weight:500; }
-    pre { border:1px solid #e5e7eb; border-radius:8px; padding:12px; background:#fff; white-space:pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; line-height:1.8; }
+    pre { border:1px solid #D2D2D4; border-radius:8px; padding:12px; background:#fff; white-space:pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; line-height:1.8; }
     ul { margin: 8px 0; padding-left: 18px; }
   </style>
 </head>
@@ -336,6 +312,119 @@ function buildExportHtml(
 </html>`;
 }
 
+async function extractTextForAPI(file: File): Promise<string> {
+  let attempts = 0;
+  while (!window.pdfjsLib && attempts < 20) {
+    await new Promise((resolve) => window.setTimeout(resolve, 200));
+    attempts += 1;
+  }
+  if (!window.pdfjsLib) {
+    throw new Error("PDF.js failed to load");
+  }
+
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN_URL;
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  let text = "";
+
+  for (let i = 1; i <= pdf.numPages; i += 1) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map((item) => item.str || "").join(" ") + "\n";
+  }
+
+  return text;
+}
+
+async function renderPDFToCanvas(
+  file: File
+): Promise<number> {
+  let attempts = 0;
+  while (!window.pdfjsLib && attempts < 20) {
+    await new Promise((resolve) => window.setTimeout(resolve, 200));
+    attempts += 1;
+  }
+  if (!window.pdfjsLib) {
+    console.error("PDF.js failed to load");
+    return 0;
+  }
+
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN_URL;
+
+  const container = document.getElementById("pdf-canvas-container") as HTMLDivElement | null;
+  if (!container) return 0;
+
+  container.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:300px;gap:12px">
+      <div style="width:28px;height:28px;border:2px solid #D2D2D4;border-top-color:#FF634A;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+      <span style="font-size:11px;color:#9b9b9b">Rendering preview...</span>
+    </div>
+  `;
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    container.innerHTML = "";
+
+    let renderedPages = 0;
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
+      const page = await pdf.getPage(pageNum);
+
+      const desiredWidth = 680;
+      const viewport = page.getViewport({ scale: 1 });
+      const scale = desiredWidth / viewport.width;
+      const scaledViewport = page.getViewport({ scale });
+
+      const wrapper = document.createElement("div");
+      wrapper.style.cssText = `
+        background: white;
+        box-shadow: 0 2px 16px rgba(0,0,0,0.12);
+        border-radius: 2px;
+        margin: 0 auto 20px auto;
+        width: ${scaledViewport.width}px;
+        overflow: hidden;
+      `;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(scaledViewport.width);
+      canvas.height = Math.floor(scaledViewport.height);
+      canvas.style.cssText = "display:block;width:100%;height:auto";
+
+      wrapper.appendChild(canvas);
+      container.appendChild(wrapper);
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) continue;
+      await page.render({
+        canvasContext: ctx,
+        viewport: scaledViewport,
+        background: "white",
+      }).promise;
+      renderedPages += 1;
+    }
+
+    return renderedPages;
+  } catch (err) {
+    console.error("PDF render error:", err);
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:center;height:200px;color:#FF634A;font-size:12px;padding:20px;text-align:center">
+        Could not render PDF preview. Please paste your resume text in the left panel instead.
+      </div>
+    `;
+    return 0;
+  }
+}
+
+async function extractDocxText(file: File): Promise<string> {
+  if (!window.mammoth) {
+    throw new Error("Mammoth not loaded yet.");
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const result = await window.mammoth.extractRawText({ arrayBuffer });
+  return result.value.trim();
+}
+
 async function readFileAsText(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -351,29 +440,28 @@ async function parseUploadToText(file: File, role: "resume" | "jd"): Promise<str
     return (await readFileAsText(file)).trim();
   }
 
-  if (ext === "pdf" || ext === "docx") {
-    const prefix = `File uploaded: ${file.name} — text extraction in progress`;
-    try {
-      const raw = await readFileAsText(file);
-      const cleaned = raw.replace(/\u0000/g, "").trim();
-      if (cleaned.length > 0) {
-        return `${prefix}\n\n${cleaned.slice(0, 20000)}`;
-      }
-      return prefix;
-    } catch {
-      return prefix;
-    }
+  if (ext === "pdf") {
+    return extractTextForAPI(file);
+  }
+
+  if (ext === "docx") {
+    return extractDocxText(file);
   }
 
   throw new Error(`Unsupported ${role} file. Use .txt, .pdf, or .docx`);
 }
 
 export default function CVForgeResumeAnalyzer(): JSX.Element {
-  const [stage, setStage] = useState<Stage>("idle");
+  const [stage, setStage] = useState<Stage>("input");
+  const [showInputStage, setShowInputStage] = useState<boolean>(true);
+  const [inputOpaque, setInputOpaque] = useState<boolean>(true);
+  const [resultsVisible, setResultsVisible] = useState<boolean>(false);
   const [resumeText, setResumeText] = useState<string>(DEFAULT_RESUME);
+  const [resumeTextForAPI, setResumeTextForAPI] = useState<string>(DEFAULT_RESUME);
   const [jobDescriptionText, setJobDescriptionText] = useState<string>(DEFAULT_JD);
   const [resumeFileName, setResumeFileName] = useState<string>("");
   const [jdFileName, setJdFileName] = useState<string>("");
+  const [resumePreviewStatus, setResumePreviewStatus] = useState<string | null>(null);
 
   const [activeStep, setActiveStep] = useState<number>(-1);
   const [doneSteps, setDoneSteps] = useState<number>(0);
@@ -381,34 +469,49 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
   const [analyzedAt, setAnalyzedAt] = useState<string>("");
   const [atsDelta, setAtsDelta] = useState<number | null>(null);
 
-  const [tooltip, setTooltip] = useState<TooltipState>({
-    visible: false,
-    x: 0,
-    y: 0,
-    text: "",
-  });
-
-  const [MonacoEditor, setMonacoEditor] = useState<MonacoEditorType | null>(null);
   const resultsRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    let mounted = true;
-    import("@monaco-editor/react")
-      .then((mod) => {
-        if (!mounted) return;
-        setMonacoEditor(() => mod.default as MonacoEditorType);
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setMonacoEditor(null);
+    const loadPDFJS = async (): Promise<void> => {
+      const existingPdfLib = window.pdfjsLib;
+      if (existingPdfLib) {
+        existingPdfLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN_URL;
+        return;
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = PDFJS_CDN_URL;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("Failed to load PDF.js"));
+        document.head.appendChild(script);
       });
+
+      const loadedPdfLib = window.pdfjsLib;
+      if (loadedPdfLib) {
+        loadedPdfLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN_URL;
+      }
+    };
+
+    void loadPDFJS();
+  }, []);
+
+  useEffect(() => {
+    const style = document.createElement("style");
+    style.textContent = "@keyframes spin { to { transform: rotate(360deg); } }";
+    document.head.appendChild(style);
+
     return () => {
-      mounted = false;
+      style.remove();
     };
   }, []);
 
-  const resumePreviewText = resumeText.trim() ? resumeText : "// Your resume will appear here...";
-  const previewLines = useMemo(() => resumePreviewText.split("\n"), [resumePreviewText]);
+  useEffect(() => {
+    if (window.mammoth) return;
+    const script = document.createElement("script");
+    script.src = MAMMOTH_CDN_URL;
+    document.head.appendChild(script);
+  }, []);
 
   const ring = useMemo(() => {
     const score = analysis?.ats_score ?? 0;
@@ -417,11 +520,6 @@ export default function CVForgeResumeAnalyzer(): JSX.Element {
     const progress = (score / 100) * circumference;
     return { radius, circumference, offset: circumference - progress };
   }, [analysis]);
-
-  const highlightSegments = useMemo(() => {
-    if (!analysis) return [];
-    return buildHighlightSegments(resumeText, analysis.highlights);
-  }, [analysis, resumeText]);
 
   async function callAnthropic(resume: string, jd: string): Promise<AnalysisResult> {
     const apiKey = process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY;
@@ -497,7 +595,7 @@ ${jd}`;
   }
 
   async function runAnalysis(isReanalyze: boolean): Promise<void> {
-    if (!resumeText.trim()) {
+    if (!resumeTextForAPI.trim()) {
       alert("Please provide resume content.");
       return;
     }
@@ -507,6 +605,13 @@ ${jd}`;
     }
 
     const previousAts = isReanalyze && analysis ? analysis.ats_score : null;
+
+    if (!isReanalyze && showInputStage) {
+      setInputOpaque(false);
+      await sleep(300);
+      setShowInputStage(false);
+    }
+
     setStage("loading");
     setActiveStep(0);
     setDoneSteps(0);
@@ -519,7 +624,7 @@ ${jd}`;
 
         if (i === 2) {
           const start = Date.now();
-          nextResult = await callAnthropic(resumeText, jobDescriptionText);
+          nextResult = await callAnthropic(resumeTextForAPI, jobDescriptionText);
           const elapsed = Date.now() - start;
           if (elapsed < STEP_DELAY_MS[i]) {
             await sleep(STEP_DELAY_MS[i] - elapsed);
@@ -542,7 +647,11 @@ ${jd}`;
       } else {
         setAtsDelta(nextResult.ats_score - previousAts);
       }
+      setResultsVisible(false);
       setStage("results");
+      window.requestAnimationFrame(() => {
+        setResultsVisible(true);
+      });
 
       window.setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -550,21 +659,105 @@ ${jd}`;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Analysis failed.";
       alert(message);
-      setStage("idle");
+      if (!isReanalyze) {
+        setShowInputStage(true);
+        setInputOpaque(false);
+        window.requestAnimationFrame(() => {
+          setInputOpaque(true);
+        });
+      }
+      setStage("input");
       setActiveStep(-1);
       setDoneSteps(0);
     }
   }
 
+  function resetToInputStage(): void {
+    setStage("input");
+    setAnalysis(null);
+    setAnalyzedAt("");
+    setAtsDelta(null);
+    setActiveStep(-1);
+    setDoneSteps(0);
+    setResultsVisible(false);
+    setShowInputStage(true);
+    setInputOpaque(false);
+    window.requestAnimationFrame(() => {
+      setInputOpaque(true);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  }
+
+  function renderLoadingSteps(): JSX.Element {
+    return (
+      <div className="w-full max-w-[400px] flex flex-col gap-2">
+        {STEPS.map((step, index) => {
+          const done = index < doneSteps;
+          const active = index === activeStep && !done;
+          return (
+            <div
+              key={step}
+              className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-all duration-300 ${
+                done
+                  ? "border-[#D2D2D4] bg-[#E7E7E7]"
+                  : active
+                    ? "border-[#FF634A] bg-[#E7E7E7]"
+                    : "border-[#D2D2D4] bg-[#F4F4F6]"
+              }`}
+            >
+              {done && (
+                <span className="w-4 h-4 rounded-full bg-[#FF634A] text-white text-[9px] flex items-center justify-center">
+                  ✓
+                </span>
+              )}
+              {active && <span className="w-4 h-4 rounded-full border-2 border-[#FF634A] animate-spin" />}
+              {!done && !active && <span className="w-4 h-4 rounded-full border border-[#D2D2D4]" />}
+              <span
+                className={`text-xs ${
+                  done ? "text-[#FF634A]" : active ? "font-medium text-[#1a1a1a]" : "text-[#9b9b9b]"
+                }`}
+              >
+                {step}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   async function handleResumeUpload(file: File | null): Promise<void> {
     if (!file) return;
+    const fileName = file.name;
+    const ext = fileName.split(".").pop()?.toLowerCase() || "";
+    setResumeFileName(file.name);
+
     try {
-      const content = await parseUploadToText(file, "resume");
-      setResumeFileName(file.name);
-      setResumeText(content);
+      if (ext === "pdf") {
+        void renderPDFToCanvas(file);
+        const text = await extractTextForAPI(file);
+        setResumeText(text);
+        setResumeTextForAPI(text);
+      } else if (ext === "docx") {
+        const text = await extractDocxText(file);
+        setResumeText(text);
+        setResumeTextForAPI(text);
+        renderTextPreview(text);
+      } else {
+        const extractedText = await readFileAsText(file);
+        setResumeText(extractedText);
+        setResumeTextForAPI(extractedText);
+        renderTextPreview(extractedText);
+      }
+
+      setResumePreviewStatus(null);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to process file.";
-      alert(message);
+      const message = `// Could not extract text from ${fileName}. Please paste your resume manually.`;
+      setResumeText(message);
+      setResumeTextForAPI(message);
+      setResumePreviewStatus(message);
+      const errorMessage = error instanceof Error ? error.message : "Unable to process file.";
+      alert(errorMessage);
     }
   }
 
@@ -606,80 +799,66 @@ ${jd}`;
     URL.revokeObjectURL(url);
   }
 
-  function renderAnnotatedResume(): JSX.Element {
-    if (!analysis) {
-      return <>{resumeText}</>;
-    }
+  function renderTextPreview(text: string): void {
+    const container = document.getElementById("pdf-canvas-container") as HTMLDivElement | null;
+    if (!container) return;
 
-    if (highlightSegments.length === 0) {
-      return <>{resumeText}</>;
-    }
+    const lines = text.split("\n");
+    const wrapper = document.createElement("div");
+    wrapper.style.cssText =
+      "width:750px;padding:48px 56px;background:white;box-shadow:0 2px 12px rgba(0,0,0,0.12);margin:24px auto;border-radius:2px";
 
-    const parts: JSX.Element[] = [];
-    let cursor = 0;
-
-    for (let i = 0; i < highlightSegments.length; i += 1) {
-      const seg = highlightSegments[i];
-      if (seg.start > cursor) {
-        parts.push(<span key={`plain-${cursor}`}>{resumeText.slice(cursor, seg.start)}</span>);
+    for (const line of lines) {
+      if (!line.trim()) {
+        const spacer = document.createElement("div");
+        spacer.style.height = "8px";
+        wrapper.appendChild(spacer);
+        continue;
       }
 
-      parts.push(
-        <span
-          key={`hl-${seg.start}-${seg.end}`}
-          className={highlightClasses(seg.item.type)}
-          onMouseEnter={(event) => {
-            setTooltip({
-              visible: true,
-              x: event.clientX + 12,
-              y: event.clientY + 12,
-              text: seg.item.reason,
-            });
-          }}
-          onMouseMove={(event) => {
-            setTooltip((prev) => ({
-              ...prev,
-              visible: true,
-              x: event.clientX + 12,
-              y: event.clientY + 12,
-              text: seg.item.reason,
-            }));
-          }}
-          onMouseLeave={() => setTooltip((prev) => ({ ...prev, visible: false }))}
-        >
-          {resumeText.slice(seg.start, seg.end)}
-        </span>
-      );
-
-      cursor = seg.end;
+      const p = document.createElement("p");
+      p.style.cssText =
+        "font-size:12px;color:#333;line-height:1.8;margin:0;font-family:'Inter',sans-serif";
+      p.textContent = line;
+      wrapper.appendChild(p);
     }
 
-    if (cursor < resumeText.length) {
-      parts.push(<span key={`tail-${cursor}`}>{resumeText.slice(cursor)}</span>);
-    }
-
-    return <>{parts}</>;
+    container.innerHTML = "";
+    container.appendChild(wrapper);
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="fixed top-0 left-0 right-0 bg-white border-b border-gray-200 h-11 px-6 flex items-center gap-2 z-30">
-        <span className="w-2 h-2 rounded-full bg-gray-900" />
-        <span className="text-sm font-medium text-gray-900">CV FORGE</span>
-        <span className="text-xs text-gray-400 ml-1">AI Resume Analyzer</span>
+    <div className="min-h-screen bg-[#F4F4F6]">
+      <header className="sticky top-0 z-[100] w-full h-[52px] bg-white border-b border-[#D2D2D4] px-6 flex items-center justify-between">
+        <div className="flex items-center">
+          <span className="w-2 h-2 rounded-full bg-[#FF634A]" />
+          <span className="text-sm font-semibold text-[#1a1a1a] ml-2">CV FORGE</span>
+        </div>
+        <button
+          type="button"
+          onClick={resetToInputStage}
+          className="border border-[#D2D2D4] text-xs text-[#ffffff] px-4 py-1.5 rounded-lg bg-[#FF634A]  hover:border-[#d85858] hover:bg-[#fa4b4b] hover:text-[#ffffff] transition-all duration-150 cursor-pointer"
+        >
+          Logout
+        </button>
       </header>
 
-      <main className="pt-11">
-        <section className="grid grid-cols-[40%_60%] h-full min-h-[600px] border-t border-gray-200">
-          <div className="border-r border-gray-200 flex flex-col">
-            <div className="flex-1 min-h-0 border-b border-gray-200 flex flex-col">
-              <div className="px-5 py-3 border-b border-gray-200 flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Resume Input</span>
+      <main className={stage === "input" && showInputStage ? "h-[calc(100vh-52px)] overflow-hidden" : ""}>
+        {showInputStage && (
+        <section
+          className={`grid grid-cols-[40%_60%] h-[calc(100vh-52px)] border-t border-[#D2D2D4] transition-opacity duration-300 ease-in-out ${
+            inputOpaque ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          <div className="border-r border-[#D2D2D4] flex flex-col bg-[#E7E7E7] h-[calc(100vh-52px)] overflow-hidden">
+            <div className="flex-1 min-h-0 border-b border-[#D2D2D4] flex flex-col overflow-hidden transition-shadow duration-200 ease-in-out hover:shadow-[0_2px_12px_rgba(255,99,74,0.08)]">
+              <div className="px-5 py-3 border-b border-[#D2D2D4] flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#FF634A]" />
+                <span className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide">Resume Input</span>
               </div>
 
-              <div className="flex-1 flex flex-col">
-                <label className="mx-4 mt-3 border border-dashed border-gray-300 rounded-lg p-5 text-center cursor-pointer hover:bg-gray-50 relative transition-all duration-150">
+              <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
+                <label className="mx-4 mt-3 border-[1.5px] border-dashed border-[#D2D2D4] bg-[#F4F4F6] rounded-lg p-5 text-center cursor-pointer relative transition-all duration-200 ease-in-out hover:border-[#FF634A] hover:bg-[#fff1ee] hover:scale-[1.01]">
                   <input
                     type="file"
                     accept={ACCEPTED_TYPES}
@@ -688,35 +867,40 @@ ${jd}`;
                       void handleResumeUpload(event.target.files?.[0] ?? null);
                     }}
                   />
-                  <div className="text-base text-gray-500">⬆</div>
-                  <div className="text-xs text-gray-500 mt-2">Drop resume file or click to upload</div>
-                  <div className="text-xs text-gray-400 mt-1">Accepted: .txt, .pdf, .docx</div>
+                  <div className="text-base text-[#6b6b6b]">⬆</div>
+                  <div className="text-xs text-[#6b6b6b] mt-2">Drop resume file or click to upload</div>
+                  <div className="text-xs text-[#9b9b9b] mt-1">Accepted: .txt, .pdf, .docx</div>
                   {resumeFileName && (
-                    <div className="inline-flex bg-blue-50 text-blue-600 text-xs rounded-full px-3 py-0.5 mt-2">
+                    <div className="inline-flex bg-[#fff1ee] text-[#FF634A] border border-[#ffc4b8] rounded-full px-3 py-1 text-xs font-medium mt-2 transition-all duration-200 hover:bg-[#FF634A] hover:text-white">
                       {resumeFileName}
                     </div>
                   )}
                 </label>
 
-                <div className="text-xs text-gray-300 text-center my-2">or paste resume content</div>
+                <div className="text-xs text-[#9b9b9b] text-center my-2">or paste resume content</div>
 
                 <textarea
                   value={resumeText}
-                  onChange={(event) => setResumeText(event.target.value)}
+                  onChange={(event) => {
+                    setResumeText(event.target.value);
+                    setResumeTextForAPI(event.target.value);
+                    renderTextPreview(event.target.value);
+                    setResumePreviewStatus(null);
+                  }}
                   placeholder="Paste resume text here..."
-                  className="mx-4 mb-4 w-[calc(100%-2rem)] h-36 bg-white border border-gray-200 rounded-lg p-3 text-xs text-gray-700 leading-relaxed resize-none focus:outline-none focus:border-gray-400 placeholder-gray-300"
+                  className="mx-4 mb-4 w-[calc(100%-2rem)] flex-1 min-h-0 bg-[#F4F4F6] border border-[#D2D2D4] rounded-lg p-3 text-xs text-[#1a1a1a] leading-relaxed resize-none focus:outline-none focus:border-[#D2D2D4] placeholder-[#9b9b9b]"
                 />
               </div>
             </div>
 
-            <div className="flex-1 min-h-0 flex flex-col">
-              <div className="px-5 py-3 border-b border-gray-200 flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Job Description</span>
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden transition-shadow duration-200 ease-in-out hover:shadow-[0_2px_12px_rgba(255,99,74,0.08)]">
+              <div className="px-5 py-3 border-b border-[#D2D2D4] flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#FF634A]" />
+                <span className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide">Job Description</span>
               </div>
 
-              <div className="flex-1 flex flex-col">
-                <label className="mx-4 mt-3 border border-dashed border-gray-300 rounded-lg p-5 text-center cursor-pointer hover:bg-gray-50 relative transition-all duration-150">
+              <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
+                <label className="mx-4 mt-3 border-[1.5px] border-dashed border-[#D2D2D4] bg-[#F4F4F6] rounded-lg p-5 text-center cursor-pointer relative transition-all duration-200 ease-in-out hover:border-[#FF634A] hover:bg-[#fff1ee] hover:scale-[1.01]">
                   <input
                     type="file"
                     accept={ACCEPTED_TYPES}
@@ -725,139 +909,108 @@ ${jd}`;
                       void handleJDUpload(event.target.files?.[0] ?? null);
                     }}
                   />
-                  <div className="text-base text-gray-500">⬆</div>
-                  <div className="text-xs text-gray-500 mt-2">Drop JD file or click to upload</div>
-                  <div className="text-xs text-gray-400 mt-1">Accepted: .txt, .pdf, .docx</div>
+                  <div className="text-base text-[#6b6b6b]">⬆</div>
+                  <div className="text-xs text-[#6b6b6b] mt-2">Drop JD file or click to upload</div>
+                  <div className="text-xs text-[#9b9b9b] mt-1">Accepted: .txt, .pdf, .docx</div>
                   {jdFileName && (
-                    <div className="inline-flex bg-green-50 text-green-600 text-xs rounded-full px-3 py-0.5 mt-2">
+                    <div className="inline-flex bg-[#fff1ee] text-[#FF634A] border border-[#ffc4b8] rounded-full px-3 py-1 text-xs font-medium mt-2 transition-all duration-200 hover:bg-[#FF634A] hover:text-white">
                       {jdFileName}
                     </div>
                   )}
                 </label>
 
-                <div className="text-xs text-gray-300 text-center my-2">or paste job description</div>
+                <div className="text-xs text-[#9b9b9b] text-center my-2">or paste job description</div>
 
                 <textarea
                   value={jobDescriptionText}
                   onChange={(event) => setJobDescriptionText(event.target.value)}
                   placeholder="Paste job description here..."
-                  className="mx-4 mb-4 w-[calc(100%-2rem)] h-36 bg-white border border-gray-200 rounded-lg p-3 text-xs text-gray-700 leading-relaxed resize-none focus:outline-none focus:border-gray-400 placeholder-gray-300"
+                  className="mx-4 mb-4 w-[calc(100%-2rem)] flex-1 min-h-0 bg-[#F4F4F6] border border-[#D2D2D4] rounded-lg p-3 text-xs text-[#1a1a1a] leading-relaxed resize-none focus:outline-none focus:border-[#D2D2D4] placeholder-[#9b9b9b]"
                 />
               </div>
             </div>
           </div>
 
-          <div className="flex flex-col min-h-0">
-            <div className="px-5 py-3 border-b border-gray-200 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
-              <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Resume Preview</span>
+          <div className="flex flex-col min-h-0 h-[calc(100vh-52px)] bg-[#E7E7E7] overflow-hidden">
+            <div className="px-5 py-3 border-b border-[#D2D2D4] flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#FF634A]" />
+              <span className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide">Resume Preview</span>
             </div>
 
-            <div className="flex-1 min-h-0">
-              {MonacoEditor ? (
-                <MonacoEditor
-                  height="100%"
-                  defaultLanguage="markdown"
-                  value={resumePreviewText}
-                  theme="vs-dark"
-                  options={{
-                    readOnly: true,
-                    minimap: { enabled: false },
-                    wordWrap: "on",
-                    fontSize: 12,
-                    lineNumbers: "on",
-                    scrollBeyondLastLine: false,
-                    glyphMargin: false,
-                    folding: false,
+            <div className="preview-chrome flex-1 min-h-0 h-full bg-[#D2D2D4] overflow-y-auto">
+              <div
+                id="pdf-canvas-container"
+                className="preview-chrome"
+                style={{
+                  height: "100%",
+                  overflowY: "auto",
+                  padding: "20px",
+                  backgroundColor: "#D2D2D4",
+                }}
+              >
+                <div
+                  id="preview-placeholder"
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    height: "100%",
+                    minHeight: "500px",
+                    color: "#aaa",
+                    fontSize: "12px",
+                    textAlign: "center",
+                    gap: "10px",
                   }}
-                />
-              ) : (
-                <div className="h-full flex">
-                  <div className="w-10 bg-[#1e1e1e] text-[#858585] text-xs font-mono text-right pr-3 pt-5 select-none border-r border-[#333] leading-[1.85] overflow-hidden">
-                    {previewLines.map((_line, idx) => (
-                      <div key={`line-${idx + 1}`}>{idx + 1}</div>
-                    ))}
-                  </div>
-                  <textarea
-                    readOnly
-                    value={resumePreviewText}
-                    className="font-mono text-xs leading-[1.85] bg-[#1e1e1e] text-[#d4d4d4] p-5 w-full h-full resize-none focus:outline-none border-none"
-                  />
+                >
+                  <div style={{ fontSize: "28px" }}>📄</div>
+                  <div>Upload or paste your resume to preview it here</div>
                 </div>
-              )}
+              </div>
             </div>
           </div>
         </section>
+        )}
 
-        <section className="mt-8 mb-4 flex justify-center">
-          {stage !== "loading" ? (
-            <button
-              type="button"
-              onClick={() => {
-                void runAnalysis(false);
-              }}
-              className="bg-gray-900 text-white text-sm font-medium px-10 py-3 rounded-lg hover:bg-gray-800 transition-colors"
-            >
-              Analyze Resume
-            </button>
-          ) : (
-            <div className="max-w-sm mx-auto flex flex-col gap-2 py-4 w-full">
-              {STEPS.map((step, index) => {
-                const done = index < doneSteps;
-                const active = index === activeStep && !done;
-                return (
-                  <div
-                    key={step}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-all duration-300 ${
-                      done
-                        ? "border-green-200 bg-green-50"
-                        : active
-                          ? "border-gray-300 bg-white"
-                          : "border-gray-200 bg-white"
-                    }`}
-                  >
-                    {done && (
-                      <span className="w-4 h-4 rounded-full bg-green-500 text-white text-[9px] flex items-center justify-center">
-                        ✓
-                      </span>
-                    )}
-                    {active && <span className="w-4 h-4 rounded-full border-2 border-gray-900 animate-spin" />}
-                    {!done && !active && <span className="w-4 h-4 rounded-full border border-gray-300" />}
-                    <span
-                      className={`text-xs ${
-                        done ? "text-green-600" : active ? "font-medium text-gray-900" : "text-gray-400"
-                      }`}
-                    >
-                      {step}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
+        {stage === "loading" && (
+          <section className="min-h-[calc(100vh-52px)] bg-[#F4F4F6] flex flex-col items-center justify-center px-6 transition-opacity duration-300 ease-in-out opacity-100">
+            {renderLoadingSteps()}
+          </section>
+        )}
 
-        {analysis && (
-          <section ref={resultsRef} className="border-t border-gray-200 mt-4 pt-8 px-6 pb-16">
+        {analysis && stage === "results" && (
+          <section
+            ref={resultsRef}
+            className={`border-t border-[#D2D2D4] pt-8 px-6 pb-16 transition-opacity duration-300 ease-in-out ${
+              resultsVisible ? "opacity-100" : "opacity-0"
+            }`}
+          >
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center">
-                <h2 className="text-sm font-medium text-gray-900">Analysis Results</h2>
-                <span className="text-xs text-gray-400 ml-3">{analyzedAt}</span>
+                <h2 className="text-sm font-medium text-[#1a1a1a]">Analysis Results</h2>
+                <span className="text-xs text-[#9b9b9b] ml-3">{analyzedAt}</span>
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={resetToInputStage}
+                  className="border border-[#D2D2D4] text-xs text-[#1a1a1a] bg-[#F4F4F6] rounded-md px-3 py-1.5 hover:bg-[#E7E7E7] transition-all duration-150"
+                >
+                  ← Analyze Another
+                </button>
                 <button
                   type="button"
                   onClick={() => {
                     void runAnalysis(true);
                   }}
-                  className="border border-gray-300 text-xs text-gray-600 rounded-md px-3 py-1.5 hover:bg-gray-50 transition-all duration-150"
+                  className="border border-[#D2D2D4] text-xs text-[#1a1a1a] bg-[#F4F4F6] rounded-md px-3 py-1.5 transition-all duration-150 hover:border-[#FF634A] hover:text-[#FF634A]"
                 >
                   ↻ Re-analyze
                 </button>
                 <button
                   type="button"
                   onClick={exportReport}
-                  className="border border-gray-300 text-xs text-gray-600 rounded-md px-3 py-1.5 hover:bg-gray-50 transition-all duration-150"
+                  className="border border-[#D2D2D4] text-xs text-[#1a1a1a] bg-[#F4F4F6] rounded-md px-3 py-1.5 transition-all duration-150 hover:border-[#FF634A] hover:text-[#FF634A]"
                 >
                   ↓ Export PDF
                 </button>
@@ -865,23 +1018,23 @@ ${jd}`;
             </div>
 
             <div className="grid grid-cols-4 gap-4 mb-8">
-              <div className="bg-white border-2 border-gray-900 rounded-lg p-4 text-center">
+              <div className="bg-[#E7E7E7] border-2 border-[#D2D2D4] rounded-lg p-4 text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
                 <div className="mx-auto relative w-20 h-20 mb-2">
                   <svg className="w-20 h-20 -rotate-90" viewBox="0 0 64 64">
-                    <circle cx="32" cy="32" r={ring.radius} fill="none" className="stroke-gray-100" strokeWidth="5" />
+                    <circle cx="32" cy="32" r={ring.radius} fill="none" className="stroke-[#D2D2D4]" strokeWidth="5" />
                     <circle
                       cx="32"
                       cy="32"
                       r={ring.radius}
                       fill="none"
-                      className="stroke-gray-900 transition-[stroke-dashoffset] duration-700 ease-out"
+                      className="stroke-[#FF634A] transition-[stroke-dashoffset] duration-700 ease-out"
                       strokeWidth="5"
                       strokeLinecap="round"
                       strokeDasharray={ring.circumference}
                       strokeDashoffset={ring.offset}
                     />
                   </svg>
-                  <div className="absolute inset-0 flex items-center justify-center text-2xl font-medium text-gray-900">
+                  <div className="absolute inset-0 flex items-center justify-center text-2xl font-medium text-[#1a1a1a]">
                     {analysis.ats_score}
                   </div>
                 </div>
@@ -893,31 +1046,31 @@ ${jd}`;
                   {scoreTone(analysis.ats_score)}
                 </div>
                 {atsDelta !== null && (
-                  <div className={`text-[10px] mt-1 ${atsDelta >= 0 ? "text-green-600" : "text-red-600"}`}>
+                  <div className={`text-[10px] mt-1 ${atsDelta >= 0 ? "text-[#FF634A]" : "text-red-600"}`}>
                     {atsDelta >= 0 ? "↑" : "↓"} {Math.abs(atsDelta)}
                   </div>
                 )}
               </div>
 
-              <div className="bg-white border border-gray-200 rounded-lg p-4 text-center">
-                <div className="text-2xl font-medium text-gray-900">{analysis.skills_score}%</div>
-                <div className="text-xs text-gray-400 mt-1">Skills</div>
+              <div className="bg-[#D2D2D4] border border-[#D2D2D4] rounded-lg p-4 text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
+                <div className="text-2xl font-medium text-[#1a1a1a]">{analysis.skills_score}%</div>
+                <div className="text-xs text-[#6b6b6b] mt-1">Skills</div>
               </div>
-              <div className="bg-white border border-gray-200 rounded-lg p-4 text-center">
-                <div className="text-2xl font-medium text-gray-900">{analysis.semantic_score}%</div>
-                <div className="text-xs text-gray-400 mt-1">Semantic</div>
+              <div className="bg-[#D2D2D4] border border-[#D2D2D4] rounded-lg p-4 text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
+                <div className="text-2xl font-medium text-[#1a1a1a]">{analysis.semantic_score}%</div>
+                <div className="text-xs text-[#6b6b6b] mt-1">Semantic</div>
               </div>
-              <div className="bg-white border border-gray-200 rounded-lg p-4 text-center">
-                <div className="text-2xl font-medium text-gray-900">{analysis.career_score}%</div>
-                <div className="text-xs text-gray-400 mt-1">Career</div>
+              <div className="bg-[#D2D2D4] border border-[#D2D2D4] rounded-lg p-4 text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
+                <div className="text-2xl font-medium text-[#1a1a1a]">{analysis.career_score}%</div>
+                <div className="text-xs text-[#6b6b6b] mt-1">Career</div>
               </div>
             </div>
 
             <div className="grid grid-cols-3 gap-4 mb-8">
               <div>
-                <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Fixes / Suggestions</div>
+                <div className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide mb-3">Fixes / Suggestions</div>
                 {analysis.suggestions.map((s, idx) => (
-                  <div key={`${s.title}-${idx}`} className={`rounded-md border p-3 mb-2 text-xs leading-relaxed ${suggestionClasses(s.type)}`}>
+                  <div key={`${s.title}-${idx}`} className={`rounded-md border p-3 mb-2 text-xs leading-relaxed transition-all duration-150 hover:translate-x-[3px] hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] ${suggestionClasses(s.type)}`}>
                     <div className="text-[9px] font-medium uppercase tracking-wide opacity-60 mb-1">{s.category}</div>
                     <div className="font-medium">{s.title}</div>
                     <div className="mt-1">{s.detail}</div>
@@ -926,21 +1079,21 @@ ${jd}`;
               </div>
 
               <div>
-                <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Keywords</div>
+                <div className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide mb-3">Keywords</div>
 
-                <div className="text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-2 mt-3">Found</div>
+                <div className="text-[10px] font-medium text-[#9b9b9b] uppercase tracking-wide mb-2 mt-3">Found</div>
                 <div className="flex flex-wrap gap-1.5">
                   {analysis.keywords_found.map((k) => (
-                    <span key={`found-${k}`} className="text-[10px] px-2 py-0.5 bg-green-50 border border-green-200 text-green-700 rounded-full">
+                    <span key={`found-${k}`} className="text-[10px] px-2 py-0.5 bg-green-50 border border-green-200 text-green-700 rounded-full transition-all duration-150 hover:scale-105">
                       {k}
                     </span>
                   ))}
                 </div>
 
-                <div className="text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-2 mt-3">Missing</div>
+                <div className="text-[10px] font-medium text-[#9b9b9b] uppercase tracking-wide mb-2 mt-3">Missing</div>
                 <div className="flex flex-wrap gap-1.5">
                   {analysis.keywords_missing.map((k) => (
-                    <span key={`missing-${k}`} className="text-[10px] px-2 py-0.5 bg-red-50 border border-red-200 text-red-700 rounded-full">
+                    <span key={`missing-${k}`} className="text-[10px] px-2 py-0.5 bg-red-50 border border-red-200 text-red-700 rounded-full transition-all duration-150 hover:scale-105">
                       {k}
                     </span>
                   ))}
@@ -948,15 +1101,15 @@ ${jd}`;
               </div>
 
               <div>
-                <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Career Fit</div>
+                <div className="text-xs font-medium text-[#6b6b6b] uppercase tracking-wide mb-3">Career Fit</div>
                 <div className="grid grid-cols-2 gap-2 mb-3">
-                  <div className="bg-white border border-gray-200 rounded-md p-2">
-                    <div className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Current</div>
-                    <div className="text-xs text-gray-700 mt-1">{analysis.career_analysis.current_level}</div>
+                  <div className="bg-[#D2D2D4] border border-[#D2D2D4] rounded-md p-2">
+                    <div className="text-[10px] font-medium text-[#6b6b6b] uppercase tracking-wide">Current</div>
+                    <div className="text-xs text-[#1a1a1a] mt-1">{analysis.career_analysis.current_level}</div>
                   </div>
-                  <div className="bg-white border border-gray-200 rounded-md p-2">
-                    <div className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Target</div>
-                    <div className="text-xs text-gray-700 mt-1">{analysis.career_analysis.target_level}</div>
+                  <div className="bg-[#D2D2D4] border border-[#D2D2D4] rounded-md p-2">
+                    <div className="text-[10px] font-medium text-[#6b6b6b] uppercase tracking-wide">Target</div>
+                    <div className="text-xs text-[#1a1a1a] mt-1">{analysis.career_analysis.target_level}</div>
                   </div>
                 </div>
 
@@ -980,45 +1133,26 @@ ${jd}`;
                   ))}
                 </div>
 
-                <p className="bg-gray-50 border border-gray-200 rounded-md p-3 text-xs text-gray-500 leading-relaxed mt-2">
+                <p className="bg-[#F4F4F6] border border-[#D2D2D4] rounded-md p-3 text-xs text-[#6b6b6b] leading-relaxed mt-2">
                   {analysis.career_analysis.narrative}
                 </p>
               </div>
             </div>
 
-            <div>
-              <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Annotated Resume</div>
-
-              <div className="flex items-center gap-4 mb-3 px-4 py-2 bg-gray-50 border border-gray-200 rounded-md">
-                <span className="text-xs text-gray-400">
-                  <span className="inline-block w-2 h-2 rounded-full bg-amber-400 mr-1" />
-                  weak phrasing
-                </span>
-                <span className="text-xs text-gray-400">
-                  <span className="inline-block w-2 h-2 rounded-full bg-red-400 mr-1" />
-                  gap/missing
-                </span>
-                <span className="text-xs text-gray-400">
-                  <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-1" />
-                  strong match
-                </span>
-              </div>
-
-              <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-none font-mono text-xs leading-[1.9] whitespace-pre-wrap break-words text-gray-700">
-                {renderAnnotatedResume()}
-              </div>
-            </div>
           </section>
         )}
       </main>
 
-      {tooltip.visible && (
-        <div
-          className="fixed bg-gray-900 text-white text-[10px] rounded px-2 py-1.5 pointer-events-none z-50 max-w-[200px] leading-relaxed"
-          style={{ left: tooltip.x, top: tooltip.y }}
+      {stage === "input" && showInputStage && (
+        <button
+          type="button"
+          onClick={() => {
+            void runAnalysis(false);
+          }}
+          className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 bg-[#FF634A] text-white text-sm font-medium px-10 py-3 rounded-xl shadow-[0_4px_16px_rgba(255,99,74,0.35)] transition-all duration-200 hover:-translate-y-[2px] hover:shadow-[0_8px_24px_rgba(255,99,74,0.4)] active:translate-y-0"
         >
-          {tooltip.text}
-        </div>
+          Analyze Resume
+        </button>
       )}
     </div>
   );

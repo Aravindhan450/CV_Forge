@@ -54,3 +54,20 @@ body {
     opacity: 1;
   }
 }
+
+.preview-chrome::-webkit-scrollbar {
+  width: 6px;
+}
+
+.preview-chrome::-webkit-scrollbar-track {
+  background: #c4c4c6;
+}
+
+.preview-chrome::-webkit-scrollbar-thumb {
+  background: #9b9b9b;
+  border-radius: 3px;
+}
+
+.preview-chrome::-webkit-scrollbar-thumb:hover {
+  background: #ff634a;
+}
